@@ -154,11 +154,15 @@ func TestTMUXPercentColorMatchesClaudeRamp(t *testing.T) {
 	}
 }
 
-func TestBurnRatioHiddenAtWindowStart(t *testing.T) {
+func TestBurnRatioStabilizationCutoff(t *testing.T) {
 	end := time.Unix(2_000_000, 0)
 	window := &UsageWindow{UsedPercent: 1, WindowDurationMins: 10080, ResetsAt: end.Unix()}
-	if _, ok := burnRatio(window, end.Add(-7*24*time.Hour+time.Hour)); ok {
-		t.Fatal("expected ratio to be hidden before 2% of the window elapsed")
+	start := end.Add(-7 * 24 * time.Hour)
+	if _, ok := burnRatio(window, start.Add(100*time.Minute)); ok {
+		t.Fatal("expected ratio to be hidden before 1% of the window elapsed")
+	}
+	if _, ok := burnRatio(window, start.Add(101*time.Minute)); !ok {
+		t.Fatal("expected ratio after 1% of the window elapsed")
 	}
 }
 

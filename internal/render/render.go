@@ -377,7 +377,7 @@ func burnRatio(window *UsageWindow, now time.Time) (float64, bool) {
 	}
 	elapsed := now.Sub(start).Seconds() / end.Sub(start).Seconds()
 	expectedPercent := elapsed * 100
-	if expectedPercent < 2 {
+	if expectedPercent < 1 {
 		return 0, false
 	}
 	return float64(window.UsedPercent) / expectedPercent, true
