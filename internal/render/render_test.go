@@ -112,15 +112,51 @@ func TestClassifyUsageByWindowDuration(t *testing.T) {
 }
 
 func TestBurnRatio(t *testing.T) {
-	end := time.Unix(2_000_000, 0)
+	t.Setenv("CODEX_STATUSLINE_SCHEDULE", filepath.Join(t.TempDir(), "missing"))
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := time.Date(2026, time.September, 21, 0, 0, 0, 0, location)
 	window := &UsageWindow{UsedPercent: 30, WindowDurationMins: 10080, ResetsAt: end.Unix()}
 	now := end.Add(-7 * 24 * time.Hour / 2)
 	ratio, ok := burnRatio(window, now)
-	if !ok || ratio < 0.599 || ratio > 0.601 {
+	if !ok || ratio < 0.513 || ratio > 0.515 {
 		t.Fatalf("got ratio %v, ok %v", ratio, ok)
 	}
-	if got := weeklyUsage(window, now); got != "7d ▰▱▱▱ 30% ⇡0.6×" {
+	if got := weeklyUsage(window, now); got != "7d ▰▱▱▱ 30% ⇡0.5×" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBurnRatioWeightsWeekendsLikeClaudeStatusline(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := time.Date(2026, time.September, 21, 0, 0, 0, 0, location)
+	window := &UsageWindow{UsedPercent: 70, WindowDurationMins: 10080, ResetsAt: end.Unix()}
+	now := time.Date(2026, time.September, 19, 12, 0, 0, 0, location)
+
+	ratio, ok := burnRatioWithSchedule(window, now, paceSchedule{})
+	if !ok || ratio < 0.799 || ratio > 0.801 {
+		t.Fatalf("got ratio %v, ok %v; want 0.8, true", ratio, ok)
+	}
+}
+
+func TestBurnRatioHonorsDatedScheduleOverride(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := time.Date(2026, time.September, 21, 0, 0, 0, 0, location)
+	window := &UsageWindow{UsedPercent: 70, WindowDurationMins: 10080, ResetsAt: end.Unix()}
+	now := time.Date(2026, time.September, 19, 12, 0, 0, 0, location)
+	schedule := paceSchedule{dates: map[string]float64{"2026-09-19": 0}}
+
+	ratio, ok := burnRatioWithSchedule(window, now, schedule)
+	if !ok || ratio < 0.769 || ratio > 0.771 {
+		t.Fatalf("got ratio %v, ok %v; want 0.77, true", ratio, ok)
 	}
 }
 
@@ -155,14 +191,29 @@ func TestTMUXPercentColorMatchesClaudeRamp(t *testing.T) {
 }
 
 func TestBurnRatioStabilizationCutoff(t *testing.T) {
-	end := time.Unix(2_000_000, 0)
+	t.Setenv("CODEX_STATUSLINE_SCHEDULE", filepath.Join(t.TempDir(), "missing"))
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := time.Date(2026, time.September, 21, 0, 0, 0, 0, location)
 	window := &UsageWindow{UsedPercent: 1, WindowDurationMins: 10080, ResetsAt: end.Unix()}
 	start := end.Add(-7 * 24 * time.Hour)
-	if _, ok := burnRatio(window, start.Add(100*time.Minute)); ok {
-		t.Fatal("expected ratio to be hidden before 1% of the window elapsed")
+	if _, ok := burnRatio(window, start.Add(172*time.Minute)); ok {
+		t.Fatal("expected ratio to be hidden before 2% of weighted time elapsed")
 	}
-	if _, ok := burnRatio(window, start.Add(101*time.Minute)); !ok {
-		t.Fatal("expected ratio after 1% of the window elapsed")
+	if _, ok := burnRatio(window, start.Add(173*time.Minute)); !ok {
+		t.Fatal("expected ratio after 2% of weighted time elapsed")
+	}
+}
+
+func TestParsePaceScheduleMatchesClaudeFormat(t *testing.T) {
+	schedule := parsePaceSchedule(strings.NewReader("fri 0.25\n2026-09-19 # bare date means zero\ninvalid nope\n"))
+	if got := schedule.weekdays["fri"]; got != 0.25 {
+		t.Fatalf("Friday weight = %v, want 0.25", got)
+	}
+	if got := schedule.dates["2026-09-19"]; got != 0 {
+		t.Fatalf("dated weight = %v, want 0", got)
 	}
 }
 

@@ -37,6 +37,11 @@ type usageCache struct {
 	Usage
 }
 
+type paceSchedule struct {
+	weekdays map[string]float64
+	dates    map[string]float64
+}
+
 type rateLimitWindow struct {
 	UsedPercent        int    `json:"usedPercent"`
 	WindowDurationMins *int64 `json:"windowDurationMins"`
@@ -364,10 +369,14 @@ func usageGauge(percent int) string {
 // burnRatio is actual spend divided by expected spend at this point in the
 // rolling window. A value of 1.0 is exactly on pace; 1.4 is burning 40% hot.
 func burnRatio(window *UsageWindow, now time.Time) (float64, bool) {
+	return burnRatioWithSchedule(window, now, loadPaceSchedule())
+}
+
+func burnRatioWithSchedule(window *UsageWindow, now time.Time, schedule paceSchedule) (float64, bool) {
 	if window == nil || window.WindowDurationMins <= 0 || window.ResetsAt <= 0 {
 		return 0, false
 	}
-	end := time.Unix(window.ResetsAt, 0)
+	end := time.Unix(window.ResetsAt, 0).In(now.Location())
 	start := end.Add(-time.Duration(window.WindowDurationMins) * time.Minute)
 	if !now.After(start) {
 		return 0, false
@@ -375,12 +384,115 @@ func burnRatio(window *UsageWindow, now time.Time) (float64, bool) {
 	if now.After(end) {
 		now = end
 	}
-	elapsed := now.Sub(start).Seconds() / end.Sub(start).Seconds()
-	expectedPercent := elapsed * 100
-	if expectedPercent < 1 {
+	expectedFraction, ok := workweekExpected(start, end, now, schedule)
+	if !ok {
+		return 0, false
+	}
+	expectedPercent := expectedFraction * 100
+	if expectedPercent < 2 {
 		return 0, false
 	}
 	return float64(window.UsedPercent) / expectedPercent, true
+}
+
+func workweekExpected(start, end, now time.Time, schedule paceSchedule) (float64, bool) {
+	if !end.After(start) {
+		return 0, false
+	}
+	if now.Before(start) {
+		now = start
+	}
+	if now.After(end) {
+		now = end
+	}
+
+	var total, elapsed float64
+	for dayStart := start; dayStart.Before(end); dayStart = dayStart.Add(24 * time.Hour) {
+		dayEnd := dayStart.Add(24 * time.Hour)
+		if dayEnd.After(end) {
+			dayEnd = end
+		}
+		weight := schedule.weight(dayStart)
+		total += weight * dayEnd.Sub(dayStart).Hours() / 24
+		if now.After(dayStart) {
+			elapsedEnd := now
+			if elapsedEnd.After(dayEnd) {
+				elapsedEnd = dayEnd
+			}
+			elapsed += weight * elapsedEnd.Sub(dayStart).Hours() / 24
+		}
+	}
+	if total <= 0 {
+		return 0, false
+	}
+	return elapsed / total, true
+}
+
+func (schedule paceSchedule) weight(day time.Time) float64 {
+	weight := 1.0
+	if day.Weekday() == time.Saturday || day.Weekday() == time.Sunday {
+		weight = 0.5
+	}
+	weekday := strings.ToLower(day.Weekday().String()[:3])
+	if override, ok := schedule.weekdays[weekday]; ok {
+		weight = override
+	}
+	if override, ok := schedule.dates[day.Format("2006-01-02")]; ok {
+		weight = override
+	}
+	return weight
+}
+
+func loadPaceSchedule() paceSchedule {
+	path := os.Getenv("CODEX_STATUSLINE_SCHEDULE")
+	if path == "" {
+		path = os.Getenv("CLAUDE_STATUSLINE_SCHEDULE")
+	}
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return paceSchedule{}
+		}
+		path = filepath.Join(home, ".claude", "statusline-schedule")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return paceSchedule{}
+	}
+	defer file.Close()
+	return parsePaceSchedule(file)
+}
+
+func parsePaceSchedule(reader io.Reader) paceSchedule {
+	schedule := paceSchedule{
+		weekdays: make(map[string]float64),
+		dates:    make(map[string]float64),
+	}
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := strings.SplitN(scanner.Text(), "#", 2)[0]
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		key := strings.ToLower(fields[0])
+		weight := 0.0
+		if len(fields) >= 2 {
+			weight, _ = strconv.ParseFloat(fields[1], 64)
+		}
+		if len(key) == 3 && strings.Contains(" mon tue wed thu fri sat sun ", " "+key+" ") {
+			if _, exists := schedule.weekdays[key]; !exists {
+				schedule.weekdays[key] = weight
+			}
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", key); err == nil {
+			if _, exists := schedule.dates[key]; !exists {
+				schedule.dates[key] = weight
+			}
+		}
+	}
+	return schedule
 }
 
 func formatRatio(ratio float64) string {

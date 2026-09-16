@@ -63,7 +63,12 @@ as `claude-statusline` and shares Codex's two-column left inset. It emits no
 content unless the session has a Codex conversation, so Claude Code sessions
 keep only their native statusline.
 The `⇡` value is actual weekly spend divided by expected spend at the current
-point in the rolling window, so `1.0×` is on pace and `1.4×` is 40% hot.
+point in the rolling window, so `1.0×` is on pace and `1.4×` is 40% hot. Its
+pace schedule matches `claude-statusline`: weekdays carry weight `1.0`, weekend
+days carry `0.5`, and reset-to-reset day buckets use the weight of the local
+calendar day on which they begin. Codex also reads Claude's shared
+`~/.claude/statusline-schedule` file for weekday and dated overrides. Set
+`CODEX_STATUSLINE_SCHEDULE` to use a different file just for Codex.
 
 Both installers are idempotent. Before the first edit they preserve a sibling
 `*.codex-statusline.bak` copy of the existing config.
