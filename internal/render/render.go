@@ -55,6 +55,7 @@ type rateLimitSnapshot struct {
 
 var agentDeckSessionPattern = regexp.MustCompile(`^agentdeck_(.+)_([[:xdigit:]]{8})$`)
 var nativeContextPattern = regexp.MustCompile(`\bContext ([0-9]+)% used\b`)
+var claudeSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 const (
 	usageCacheTTL   = 30 * time.Second
@@ -102,15 +103,22 @@ const (
 // gray, and the session summary is soft blue.
 func LineWithSessionTMUX(cwd, session string) string {
 	metadata, ok := agentDeckSessionMetadata(session)
-	if !ok || !metadata.codex {
+	if !ok || (!metadata.codex && metadata.claudeSessionID == "") {
 		return ""
 	}
 	stats := SystemStats()
 	groups := make([]string, 0, 4)
-	if value, ok := contextPercentForSession(session, metadata.instanceID); ok {
+	usage := Usage{}
+	if metadata.codex {
+		if value, ok := contextPercentForSession(session, metadata.instanceID); ok {
+			groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
+		}
+		usage = UsageRates()
+	} else if state, stateOK := loadClaudeState(metadata.claudeSessionID); stateOK {
+		value := state.ContextPercent
 		groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
+		usage.SevenDay = state.SevenDay
 	}
-	usage := UsageRates()
 	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
 	machine := fmt.Sprintf("%s↯%d ⛁%d", tmuxDimGreen, stats.CPU, stats.Mem)
 	groups = append(groups, machine+tmuxReset)
@@ -191,9 +199,16 @@ type tokenCountEvent struct {
 }
 
 type agentDeckMetadata struct {
-	instanceID string
-	codex      bool
-	theme      string
+	instanceID      string
+	codex           bool
+	claudeSessionID string
+	theme           string
+}
+
+type claudeState struct {
+	FetchedAt      int64        `json:"fetched_at"`
+	ContextPercent int          `json:"context_percent"`
+	SevenDay       *UsageWindow `json:"seven_day,omitempty"`
 }
 
 func agentDeckSessionMetadata(session string) (agentDeckMetadata, bool) {
@@ -224,9 +239,30 @@ func parseAgentDeckEnvironment(input string) agentDeckMetadata {
 			metadata.theme = strings.TrimSpace(value)
 		case "CODEX_SESSION_ID":
 			metadata.codex = strings.TrimSpace(value) != ""
+		case "CLAUDE_SESSION_ID":
+			metadata.claudeSessionID = strings.TrimSpace(value)
 		}
 	}
 	return metadata
+}
+
+func claudeStatePath(sessionID string) string {
+	return filepath.Join(os.TempDir(), "claude-statusline-"+sessionID+".json")
+}
+
+func loadClaudeState(sessionID string) (claudeState, bool) {
+	if !claudeSessionIDPattern.MatchString(sessionID) {
+		return claudeState{}, false
+	}
+	data, err := os.ReadFile(claudeStatePath(sessionID))
+	if err != nil {
+		return claudeState{}, false
+	}
+	var state claudeState
+	if json.Unmarshal(data, &state) != nil || state.ContextPercent < 0 || state.ContextPercent > 100 {
+		return claudeState{}, false
+	}
+	return state, true
 }
 
 // ContextPercent reads the latest context count from the Codex rollout that

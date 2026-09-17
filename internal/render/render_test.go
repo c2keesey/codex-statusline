@@ -67,8 +67,48 @@ func TestParseAgentDeckEnvironmentIdentifiesCodex(t *testing.T) {
 		t.Fatalf("unexpected metadata: %#v", metadata)
 	}
 	metadata = parseAgentDeckEnvironment("AGENTDECK_INSTANCE_ID=abc-123\nCLAUDE_SESSION_ID=claude-456\n")
-	if metadata.instanceID != "abc-123" || metadata.codex {
+	if metadata.instanceID != "abc-123" || metadata.codex || metadata.claudeSessionID != "claude-456" {
 		t.Fatalf("unexpected Claude metadata: %#v", metadata)
+	}
+}
+
+func TestLoadClaudeState(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	path := claudeStatePath("claude-456")
+	stateJSON := `{"fetched_at":2000000000,"context_percent":36,"seven_day":{"used_percent":42,"window_duration_mins":10080,"resets_at":2000604800}}`
+	if err := os.WriteFile(path, []byte(stateJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, ok := loadClaudeState("claude-456")
+	if !ok || state.ContextPercent != 36 || state.SevenDay == nil || state.SevenDay.UsedPercent != 42 {
+		t.Fatalf("unexpected Claude state: %#v, ok %v", state, ok)
+	}
+}
+
+func TestLoadClaudeStateRejectsInvalidSessionID(t *testing.T) {
+	if state, ok := loadClaudeState("../../other-session"); ok {
+		t.Fatalf("unexpected Claude state: %#v", state)
+	}
+}
+
+func TestTMUXLineRendersClaudeSessionState(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	writeExecutable(t, filepath.Join(bin, "tmux"), `#!/bin/sh
+printf '%s\n' 'AGENTDECK_INSTANCE_ID=instance-1' 'CLAUDE_SESSION_ID=claude-456'
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stateJSON := `{"fetched_at":2000000000,"context_percent":36,"seven_day":{"used_percent":42,"window_duration_mins":10080,"resets_at":2000604800}}`
+	if err := os.WriteFile(claudeStatePath("claude-456"), []byte(stateJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := LineWithSessionTMUX("", "agentdeck_test_abcdef12")
+	for _, want := range []string{"36%", "42%", "test_abc"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("line %q does not contain %q", got, want)
+		}
 	}
 }
 
