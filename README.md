@@ -12,7 +12,7 @@ Claude status line:
 | branch + dirty count | `git-branch` + `branch-changes` |
 | cwd | `current-dir` |
 | session summary | `thread-title` |
-| context percentage | `context-used` plus the Agent Deck tmux companion |
+| context percentage | rollout token events in the Agent Deck companion; `context-used` natively |
 | weekly usage | `weekly-limit` |
 | model + effort glyph | `model-with-reasoning` |
 | weekly usage + burn pace | local Codex app-server snapshot, cached for 30 seconds |
@@ -52,8 +52,8 @@ a compact Claude-style row:
 ```
 
 The identity retains the Agent Deck display name plus the first three characters
-of its tmux suffix. Context comes from Codex's live native statusline, with the
-latest rollout token-count event as a fallback. The fallback resets at Codex's
+of its tmux suffix. Context comes from the latest Codex rollout token-count
+event, with the visible native statusline as a fallback. It resets at Codex's
 compaction boundary and follows Codex's 12k baseline-token calculation. Usage
 comes from Codex's local `account/rateLimits/read`
 snapshot; a missing window renders as `—` rather than being reported as zero.

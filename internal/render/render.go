@@ -241,10 +241,10 @@ func ContextPercent(session string) (int, bool) {
 }
 
 func contextPercentForSession(session, instanceID string) (int, bool) {
-	if value, ok := nativeContextPercent(session); ok {
+	if value, ok := contextPercentForInstance(instanceID); ok {
 		return value, true
 	}
-	return contextPercentForInstance(instanceID)
+	return nativeContextPercent(session)
 }
 
 func nativeContextPercent(session string) (int, bool) {

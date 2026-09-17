@@ -72,6 +72,57 @@ func TestParseAgentDeckEnvironmentIdentifiesCodex(t *testing.T) {
 	}
 }
 
+func TestContextPercentPrefersRolloutOverNativeFooter(t *testing.T) {
+	bin := t.TempDir()
+	rollout := filepath.Join(t.TempDir(), "rollout.jsonl")
+	event := `{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":156000},"model_context_window":258400}}}`
+	if err := os.WriteFile(rollout, []byte(event+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(bin, "tmux"), `#!/bin/sh
+case "$1" in
+  show-environment) printf '%s\n' 'AGENTDECK_INSTANCE_ID=instance-1' 'CODEX_SESSION_ID=thread-1' ;;
+  capture-pane) printf '%s\n' 'Context 22% used' ;;
+  *) exit 1 ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(bin, "agent-deck"), `#!/bin/sh
+printf '%s\n' "$TEST_ROLLOUT"
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TEST_ROLLOUT", rollout)
+
+	got, ok := ContextPercent("agentdeck_test_abcdef12")
+	if !ok || got != 58 {
+		t.Fatalf("got %d, ok %v; want rollout value 58, true", got, ok)
+	}
+}
+
+func TestContextPercentFallsBackToNativeFooter(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "tmux"), `#!/bin/sh
+case "$1" in
+  show-environment) printf '%s\n' 'AGENTDECK_INSTANCE_ID=instance-1' 'CODEX_SESSION_ID=thread-1' ;;
+  capture-pane) printf '%s\n' 'Context 22% used' ;;
+  *) exit 1 ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(bin, "agent-deck"), "#!/bin/sh\nexit 1\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got, ok := ContextPercent("agentdeck_test_abcdef12")
+	if !ok || got != 22 {
+		t.Fatalf("got %d, ok %v; want native value 22, true", got, ok)
+	}
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseNativeContextPercentUsesVisibleFooter(t *testing.T) {
 	input := "old transcript text: Context 85% used\n\n  wt/gentle-salmon · Context 22% used · weekly 90% left\n"
 	got, ok := parseNativeContextPercent(input)
