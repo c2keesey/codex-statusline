@@ -3,10 +3,13 @@ package render
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func TestPercent(t *testing.T) {
 	if got := percent(1, 3); got != 33 {
@@ -92,7 +95,7 @@ func TestLoadClaudeStateRejectsInvalidSessionID(t *testing.T) {
 	}
 }
 
-func TestTMUXLineRendersClaudeSessionState(t *testing.T) {
+func TestTMUXLineSuppressesClaudeSession(t *testing.T) {
 	bin := t.TempDir()
 	t.Setenv("TMPDIR", t.TempDir())
 	writeExecutable(t, filepath.Join(bin, "tmux"), `#!/bin/sh
@@ -104,11 +107,27 @@ printf '%s\n' 'AGENTDECK_INSTANCE_ID=instance-1' 'CLAUDE_SESSION_ID=claude-456'
 		t.Fatal(err)
 	}
 
-	got := LineWithSessionTMUX("", "agentdeck_test_abcdef12")
-	for _, want := range []string{"36%", "42%", "test_abc"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("line %q does not contain %q", got, want)
+	if got := LineWithSessionTMUX("", "agentdeck_test_abcdef12"); got != "" {
+		t.Fatalf("Claude tmux footer should be suppressed, got %q", got)
+	}
+}
+
+func TestClaudeLineANSIRendersSharedFooterContent(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	stateJSON := `{"fetched_at":2000000000,"context_percent":36,"seven_day":{"used_percent":42,"window_duration_mins":10080,"resets_at":2000604800}}`
+	if err := os.WriteFile(claudeStatePath("claude-456"), []byte(stateJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := LineForClaudeANSI("claude-456", "agentdeck_test_abcdef12")
+	plain := ansiPattern.ReplaceAllString(got, "")
+	for _, want := range []string{"36%", "7d", "42%", "↯", "⛁", "test_abc"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("line %q does not contain %q", plain, want)
 		}
+	}
+	if strings.Contains(got, "#[") {
+		t.Fatalf("native Claude footer contains tmux styling: %q", got)
 	}
 }
 

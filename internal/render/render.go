@@ -103,22 +103,15 @@ const (
 // gray, and the session summary is soft blue.
 func LineWithSessionTMUX(cwd, session string) string {
 	metadata, ok := agentDeckSessionMetadata(session)
-	if !ok || (!metadata.codex && metadata.claudeSessionID == "") {
+	if !ok || !metadata.codex {
 		return ""
 	}
 	stats := SystemStats()
 	groups := make([]string, 0, 4)
-	usage := Usage{}
-	if metadata.codex {
-		if value, ok := contextPercentForSession(session, metadata.instanceID); ok {
-			groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
-		}
-		usage = UsageRates()
-	} else if state, stateOK := loadClaudeState(metadata.claudeSessionID); stateOK {
-		value := state.ContextPercent
+	if value, ok := contextPercentForSession(session, metadata.instanceID); ok {
 		groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
-		usage.SevenDay = state.SevenDay
 	}
+	usage := UsageRates()
 	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
 	machine := fmt.Sprintf("%s↯%d ⛁%d", tmuxDimGreen, stats.CPU, stats.Mem)
 	groups = append(groups, machine+tmuxReset)
@@ -126,6 +119,71 @@ func LineWithSessionTMUX(cwd, session string) string {
 		groups = append(groups, tmuxSummaryColor+label+tmuxReset)
 	}
 	return tmuxTheme(strings.Join(groups, " "+tmuxGray+"│"+tmuxReset+" "), metadata.theme)
+}
+
+const (
+	ansiReset        = "\x1b[0m"
+	ansiGray         = "\x1b[90m"
+	ansiDimGreen     = "\x1b[32m"
+	ansiBarEmpty     = "\x1b[90m"
+	ansiSummaryColor = "\x1b[94m"
+)
+
+// LineForClaudeANSI renders the same footer content as the Agent Deck tmux
+// companion, using terminal escapes that Claude Code's native statusline can
+// display. Claude sessions own this row natively, so their tmux footer is
+// suppressed by LineWithSessionTMUX.
+func LineForClaudeANSI(claudeSessionID, session string) string {
+	state, ok := loadClaudeState(claudeSessionID)
+	if !ok {
+		return ""
+	}
+	stats := SystemStats()
+	groups := make([]string, 0, 4)
+	groups = append(groups, ansiPercentColor(state.ContextPercent)+fmt.Sprintf("%d%%", state.ContextPercent)+ansiReset)
+	groups = append(groups, weeklyUsageANSI(state.SevenDay, time.Now()))
+	groups = append(groups, fmt.Sprintf("%s↯%d ⛁%d%s", ansiDimGreen, stats.CPU, stats.Mem, ansiReset))
+	if label := CompactSession(session); label != "" {
+		groups = append(groups, ansiSummaryColor+label+ansiReset)
+	}
+	return strings.Join(groups, " "+ansiGray+"│"+ansiReset+" ")
+}
+
+func weeklyUsageANSI(window *UsageWindow, now time.Time) string {
+	if window == nil {
+		return ansiGray + "7d " + ansiBarEmpty + "▱▱▱▱ —" + ansiReset
+	}
+	percentColor := ansiPercentColor(window.UsedPercent)
+	filled := int(float64(window.UsedPercent)/25 + 0.5)
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > 4 {
+		filled = 4
+	}
+	bar := percentColor + strings.Repeat("▰", filled)
+	if filled < 4 {
+		bar += ansiBarEmpty + strings.Repeat("▱", 4-filled)
+	}
+	label := ansiGray + "7d " + bar + " " + percentColor + fmt.Sprintf("%d%%", window.UsedPercent) + ansiReset
+	if ratio, ok := burnRatio(window, now); ok {
+		severity := int(ratio / 1.5 * 100)
+		label += " " + ansiPercentColor(severity) + "⇡" + formatRatio(ratio) + "×" + ansiReset
+	}
+	return label
+}
+
+func ansiPercentColor(percent int) string {
+	colour := 10
+	switch {
+	case percent >= 90:
+		colour = 9
+	case percent >= 80:
+		colour = 166
+	case percent >= 60:
+		colour = 136
+	}
+	return fmt.Sprintf("\x1b[1;38;5;%dm", colour)
 }
 
 func weeklyUsageTMUX(window *UsageWindow, now time.Time) string {

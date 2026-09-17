@@ -12,7 +12,7 @@ import (
 	"github.com/c2keesey/codex-statusline/internal/render"
 )
 
-const version = "0.3.13"
+const version = "0.3.14"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -48,6 +48,7 @@ func usage() {
 Usage:
   codex-statusline install [--codex-config PATH] [--tmux] [--agent-deck]
   codex-statusline render [--cwd PATH] [--session NAME] [--tmux-style]
+                          [--ansi-style --claude-session ID]
   codex-statusline doctor [--codex-config PATH]
   codex-statusline preset
   codex-statusline version
@@ -110,13 +111,17 @@ func renderCommand(args []string) error {
 	cwd := flags.String("cwd", "", "active pane directory")
 	session := flags.String("session", "", "Agent Deck tmux session name")
 	tmuxStyle := flags.Bool("tmux-style", false, "use Claude-style tmux colors")
+	ansiStyle := flags.Bool("ansi-style", false, "use Claude Code native statusline colors")
+	claudeSession := flags.String("claude-session", "", "Claude Code session id")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *cwd == "" {
 		*cwd, _ = os.Getwd()
 	}
-	if *tmuxStyle {
+	if *ansiStyle {
+		fmt.Println(render.LineForClaudeANSI(*claudeSession, *session))
+	} else if *tmuxStyle {
 		fmt.Println(render.LineWithSessionTMUX(*cwd, *session))
 	} else {
 		fmt.Println(render.LineWithSession(*cwd, *session))

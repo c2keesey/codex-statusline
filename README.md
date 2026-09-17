@@ -45,11 +45,15 @@ codex-statusline install --agent-deck
 ```
 
 This replaces Agent Deck's redundant tmux session/window text and key hints with
-a compact shared row for both Codex and Claude Code:
+a compact shared row:
 
 ```text
   61% │ 7d ▰▱▱▱ 30% ⇡0.8× │ ↯42 ⛁32 │ feature-work_5a5
 ```
+
+Codex renders the row in tmux. Claude Code renders the same content as the
+second row of its native status command and disables the redundant tmux footer
+for that session.
 
 The identity retains the Agent Deck display name plus the first three characters
 of its tmux suffix. Codex context comes from the latest rollout token-count
@@ -57,12 +61,12 @@ event, with the visible native statusline as a fallback. It resets at Codex's
 compaction boundary and follows Codex's 12k baseline-token calculation. Codex
 usage comes from its local `account/rateLimits/read` snapshot. Claude Code's
 configured status command publishes the exact context and seven-day values from
-its JSON payload into a per-session local cache for the tmux renderer. A missing
-window renders as `—` rather than being reported as zero.
+its JSON payload into a per-session local cache for its native second row. A
+missing window renders as `—` rather than being reported as zero.
 Weekly usage uses the same four-cell, 25%-per-cell gauge as the Claude line;
 context stays a plain percentage. The Agent Deck line uses the same color roles
 as `claude-statusline` and shares Codex's two-column left inset. It emits no
-content unless the session is a recognized Codex or Claude Code conversation.
+tmux content unless the session is a recognized Codex conversation.
 The `⇡` value is actual weekly spend divided by expected spend at the current
 point in the rolling window, so `1.0×` is on pace and `1.4×` is 40% hot. Its
 pace schedule matches `claude-statusline`: weekdays carry weight `1.0`, weekend
