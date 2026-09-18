@@ -56,6 +56,7 @@ type rateLimitSnapshot struct {
 var agentDeckSessionPattern = regexp.MustCompile(`^agentdeck_(.+)_([[:xdigit:]]{8})$`)
 var nativeContextPattern = regexp.MustCompile(`\bContext ([0-9]+)% used\b`)
 var claudeSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var codexSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 const (
 	usageCacheTTL   = 30 * time.Second
@@ -108,7 +109,7 @@ func LineWithSessionTMUX(cwd, session string) string {
 	}
 	stats := SystemStats()
 	groups := make([]string, 0, 4)
-	if value, ok := contextPercentForSession(session, metadata.instanceID); ok {
+	if value, ok := contextPercentForSession(session, metadata.instanceID, metadata.codexSessionID); ok {
 		groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
 	}
 	usage := UsageRates()
@@ -259,6 +260,7 @@ type tokenCountEvent struct {
 type agentDeckMetadata struct {
 	instanceID      string
 	codex           bool
+	codexSessionID  string
 	claudeSessionID string
 	theme           string
 }
@@ -296,7 +298,8 @@ func parseAgentDeckEnvironment(input string) agentDeckMetadata {
 		case "CODEX_STATUSLINE_THEME":
 			metadata.theme = strings.TrimSpace(value)
 		case "CODEX_SESSION_ID":
-			metadata.codex = strings.TrimSpace(value) != ""
+			metadata.codexSessionID = strings.TrimSpace(value)
+			metadata.codex = metadata.codexSessionID != ""
 		case "CLAUDE_SESSION_ID":
 			metadata.claudeSessionID = strings.TrimSpace(value)
 		}
@@ -331,11 +334,14 @@ func ContextPercent(session string) (int, bool) {
 	if !ok || !metadata.codex {
 		return 0, false
 	}
-	return contextPercentForSession(session, metadata.instanceID)
+	return contextPercentForSession(session, metadata.instanceID, metadata.codexSessionID)
 }
 
-func contextPercentForSession(session, instanceID string) (int, bool) {
+func contextPercentForSession(session, instanceID, codexSessionID string) (int, bool) {
 	if value, ok := contextPercentForInstance(instanceID); ok {
+		return value, true
+	}
+	if value, ok := contextPercentForCodexSession(codexSessionID); ok {
 		return value, true
 	}
 	return nativeContextPercent(session)
@@ -374,6 +380,25 @@ func contextPercentForInstance(instanceID string) (int, bool) {
 		return 0, false
 	}
 	return contextPercentFromRollout(strings.TrimSpace(string(out)))
+}
+
+func contextPercentForCodexSession(sessionID string) (int, bool) {
+	if !codexSessionIDPattern.MatchString(sessionID) {
+		return 0, false
+	}
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return 0, false
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+	matches, err := filepath.Glob(filepath.Join(codexHome, "sessions", "*", "*", "*", "*"+sessionID+"*.jsonl"))
+	if err != nil || len(matches) == 0 {
+		return 0, false
+	}
+	return contextPercentFromRollout(matches[len(matches)-1])
 }
 
 func contextPercentFromRollout(path string) (int, bool) {

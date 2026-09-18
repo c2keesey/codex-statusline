@@ -12,7 +12,7 @@ import (
 	"github.com/c2keesey/codex-statusline/internal/render"
 )
 
-const version = "0.3.14"
+const version = "0.3.15"
 
 func main() {
 	if len(os.Args) < 2 {

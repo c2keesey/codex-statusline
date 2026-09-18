@@ -66,7 +66,7 @@ func TestScanContextPercentUsesPostCompactionCount(t *testing.T) {
 
 func TestParseAgentDeckEnvironmentIdentifiesCodex(t *testing.T) {
 	metadata := parseAgentDeckEnvironment("AGENTDECK_INSTANCE_ID=abc-123\nCODEX_SESSION_ID=thread-456\n")
-	if metadata.instanceID != "abc-123" || !metadata.codex {
+	if metadata.instanceID != "abc-123" || !metadata.codex || metadata.codexSessionID != "thread-456" {
 		t.Fatalf("unexpected metadata: %#v", metadata)
 	}
 	metadata = parseAgentDeckEnvironment("AGENTDECK_INSTANCE_ID=abc-123\nCLAUDE_SESSION_ID=claude-456\n")
@@ -172,6 +172,35 @@ esac
 	got, ok := ContextPercent("agentdeck_test_abcdef12")
 	if !ok || got != 22 {
 		t.Fatalf("got %d, ok %v; want native value 22, true", got, ok)
+	}
+}
+
+func TestContextPercentFallsBackToCodexSessionRollout(t *testing.T) {
+	bin := t.TempDir()
+	codexHome := t.TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "09", "17")
+	if err := os.MkdirAll(rolloutDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(rolloutDir, "rollout-2026-09-17T16-32-31-thread-1.jsonl")
+	event := `{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":156000},"model_context_window":258400}}}`
+	if err := os.WriteFile(rollout, []byte(event+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(bin, "tmux"), `#!/bin/sh
+case "$1" in
+  show-environment) printf '%s\n' 'AGENTDECK_INSTANCE_ID=instance-1' 'CODEX_SESSION_ID=thread-1' ;;
+  capture-pane) exit 1 ;;
+  *) exit 1 ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(bin, "agent-deck"), "#!/bin/sh\nexit 1\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CODEX_HOME", codexHome)
+
+	got, ok := ContextPercent("agentdeck_test_abcdef12")
+	if !ok || got != 58 {
+		t.Fatalf("got %d, ok %v; want direct rollout value 58, true", got, ok)
 	}
 }
 
