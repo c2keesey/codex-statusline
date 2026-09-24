@@ -118,8 +118,10 @@ MIT licensed.
 
 ### Sea Glass footer
 
-For a light Sea Glass tmux session, set `status-style` to
-`fg=#15333A,bg=#E9F2EF` and set the tmux session environment variable
-`CODEX_STATUSLINE_THEME=seaglass`. The styled renderer uses ocean-colored
-accents with bold usage percentages and clears inherited dim styling.
-Other sessions retain the terminal palette.
+A session whose tmux environment has a light `COLORFGBG` (background index 8
+or above, e.g. `0;15`) renders the Sea Glass footer: ocean-colored accents with
+bold usage percentages and no inherited dim styling. Agent Deck keeps that
+variable on the viewer's theme (`agent-deck theme apply`), so the footer flips
+with it on the next status refresh. `CODEX_STATUSLINE_THEME=seaglass` in the
+session environment forces the Sea Glass footer regardless. Dark sessions
+retain the terminal palette.

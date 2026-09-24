@@ -287,6 +287,7 @@ func agentDeckSessionMetadata(session string) (agentDeckMetadata, bool) {
 
 func parseAgentDeckEnvironment(input string) agentDeckMetadata {
 	metadata := agentDeckMetadata{}
+	colorfgbg := ""
 	for line := range strings.SplitSeq(input, "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -302,9 +303,26 @@ func parseAgentDeckEnvironment(input string) agentDeckMetadata {
 			metadata.codex = metadata.codexSessionID != ""
 		case "CLAUDE_SESSION_ID":
 			metadata.claudeSessionID = strings.TrimSpace(value)
+		case "COLORFGBG":
+			colorfgbg = strings.TrimSpace(value)
 		}
 	}
+	if metadata.theme == "" && lightColorFGBG(colorfgbg) {
+		metadata.theme = "seaglass"
+	}
 	return metadata
+}
+
+// lightColorFGBG reports whether a COLORFGBG value ("fg;bg", background last)
+// names a light background. Agent Deck keeps the session's COLORFGBG on the
+// viewer's theme, so the footer follows it without a restart.
+func lightColorFGBG(value string) bool {
+	idx := strings.LastIndex(value, ";")
+	if idx < 0 {
+		return false
+	}
+	bg, err := strconv.Atoi(value[idx+1:])
+	return err == nil && bg >= 8
 }
 
 func claudeStatePath(sessionID string) string {

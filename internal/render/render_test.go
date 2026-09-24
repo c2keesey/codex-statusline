@@ -396,3 +396,15 @@ func TestSeaGlassUsageContrast(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAgentDeckEnvironmentDerivesThemeFromColorFGBG(t *testing.T) {
+	if got := parseAgentDeckEnvironment("AGENTDECK_INSTANCE_ID=a\nCOLORFGBG=0;15\n").theme; got != "seaglass" {
+		t.Fatalf("light COLORFGBG theme = %q, want seaglass", got)
+	}
+	if got := parseAgentDeckEnvironment("AGENTDECK_INSTANCE_ID=a\nCOLORFGBG=15;0\n").theme; got != "" {
+		t.Fatalf("dark COLORFGBG theme = %q, want terminal palette", got)
+	}
+	if got := parseAgentDeckEnvironment("AGENTDECK_INSTANCE_ID=a\nCOLORFGBG=15;0\nCODEX_STATUSLINE_THEME=seaglass\n").theme; got != "seaglass" {
+		t.Fatalf("explicit theme = %q, want seaglass", got)
+	}
+}
