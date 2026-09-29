@@ -15,7 +15,7 @@ Claude status line:
 | context percentage | rollout token events in the Agent Deck companion; `context-used` natively |
 | weekly usage | `weekly-limit` |
 | model + effort glyph | `model-with-reasoning` |
-| weekly usage + burn pace | local Codex app-server snapshot, cached for 30 seconds |
+| weekly usage + burn pace | Codex snapshot from `agent-deck usage --json`, cached for 30 seconds |
 | CPU + memory | optional tmux companion (`↯` + `⛁`) |
 
 The native pieces update inside the Codex pane and survive tmux, Agent Deck,
@@ -59,7 +59,10 @@ The identity retains the Agent Deck display name plus the first three characters
 of its tmux suffix. Codex context comes from the latest rollout token-count
 event, with the visible native statusline as a fallback. It resets at Codex's
 compaction boundary and follows Codex's 12k baseline-token calculation. Codex
-usage comes from its local `account/rateLimits/read` snapshot. Claude Code's
+usage comes from the `codex` provider in `agent-deck usage --json`, which owns
+the one fetch of Codex's rate limits for every tool that shows them; without
+agent-deck, or with a MAIA Deck that predates the `codex` provider, the weekly
+gauge renders as `7d ▱▱▱▱ —`. Claude Code's
 configured status command publishes the exact context and seven-day values from
 its JSON payload into a per-session local cache for its native second row. A
 missing window renders as `—` rather than being reported as zero.
@@ -81,7 +84,8 @@ Both installers are idempotent. Before the first edit they preserve a sibling
 ## Privacy
 
 The status line has no telemetry and makes no network requests of its own. It
-reads local tmux state, machine load, and Codex's local app-server response.
+reads local tmux state, machine load, and the Codex quota snapshot printed by
+the local `agent-deck usage --json`.
 The cache contains only rate-limit percentages and reset timestamps, is stored
 in the system temp directory with user-only permissions, and expires after 30
 seconds. Transcript content, prompts, credentials, and account identifiers are
