@@ -41,6 +41,14 @@ func TestScanContextPercentUsesLatestTokenCount(t *testing.T) {
 	}
 }
 
+func TestScanContextPercentKeepsOverflow(t *testing.T) {
+	input := `{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":232000},"model_context_window":212000}}}`
+	got, ok := scanContextPercent(strings.NewReader(input))
+	if !ok || got != 110 {
+		t.Fatalf("got %d, ok %v; want 110, true", got, ok)
+	}
+}
+
 func TestScanContextPercentResetsAtCompaction(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":220000},"model_context_window":258400}}}`,
@@ -219,10 +227,21 @@ func TestParseNativeContextPercentUsesVisibleFooter(t *testing.T) {
 	}
 }
 
-func TestParseNativeContextPercentClampsCodexOverflow(t *testing.T) {
+func TestParseNativeContextPercentKeepsCodexOverflow(t *testing.T) {
 	got, ok := parseNativeContextPercent("Context 101% used")
-	if !ok || got != 100 {
-		t.Fatalf("got %d, ok %v; want 100, true", got, ok)
+	if !ok || got != 101 {
+		t.Fatalf("got %d, ok %v; want 101, true", got, ok)
+	}
+}
+
+func TestLoadClaudeStateKeepsContextOverflow(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	if err := os.WriteFile(claudeStatePath("claude-789"), []byte(`{"fetched_at":2000000000,"context_percent":146}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := loadClaudeState("claude-789")
+	if !ok || state.ContextPercent != 146 {
+		t.Fatalf("unexpected Claude state: %#v, ok %v", state, ok)
 	}
 }
 

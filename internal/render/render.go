@@ -338,7 +338,7 @@ func loadClaudeState(sessionID string) (claudeState, bool) {
 		return claudeState{}, false
 	}
 	var state claudeState
-	if json.Unmarshal(data, &state) != nil || state.ContextPercent < 0 || state.ContextPercent > 100 {
+	if json.Unmarshal(data, &state) != nil || state.ContextPercent < 0 {
 		return claudeState{}, false
 	}
 	return state, true
@@ -383,9 +383,6 @@ func parseNativeContextPercent(input string) (int, bool) {
 	value, err := strconv.Atoi(matches[len(matches)-1][1])
 	if err != nil || value < 0 {
 		return 0, false
-	}
-	if value > 100 {
-		value = 100
 	}
 	return value, true
 }
@@ -462,11 +459,7 @@ func scanContextPercent(reader io.Reader) (int, bool) {
 			continue
 		}
 		used = max(used-baselineTokens, 0)
-		remaining := max(effectiveWindow-used, 0)
-		value = 100 - percent(remaining, effectiveWindow)
-		if value < 0 {
-			value = 0
-		}
+		value = percent(used, effectiveWindow)
 		found = true
 	}
 	return value, found
