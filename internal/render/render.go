@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,16 +43,30 @@ type paceSchedule struct {
 	dates    map[string]float64
 }
 
-type rateLimitWindow struct {
-	UsedPercent        int    `json:"usedPercent"`
-	WindowDurationMins *int64 `json:"windowDurationMins"`
-	ResetsAt           *int64 `json:"resetsAt"`
+// agentDeckUsageReport is the subset of `agent-deck usage --json` this renderer
+// reads. agent-deck owns acquisition of subscription quota for every provider;
+// this line never talks to the Codex app-server itself.
+type agentDeckUsageReport struct {
+	Providers []agentDeckQuotaSnapshot `json:"providers"`
 }
 
-type rateLimitSnapshot struct {
-	Primary   *rateLimitWindow `json:"primary"`
-	Secondary *rateLimitWindow `json:"secondary"`
+type agentDeckQuotaSnapshot struct {
+	ID      string                 `json:"id"`
+	Windows []agentDeckQuotaWindow `json:"windows"`
+	Error   string                 `json:"error"`
 }
+
+type agentDeckQuotaWindow struct {
+	Kind           string  `json:"kind"`
+	UsedPercentage float64 `json:"used_percentage"`
+	ResetsAt       *int64  `json:"resets_at"`
+}
+
+const (
+	agentDeckCodexProvider = "codex"
+	agentDeckSevenDayKind  = "seven_day"
+	sevenDayWindowMins     = 10080
+)
 
 var agentDeckSessionPattern = regexp.MustCompile(`^agentdeck_(.+)_([[:xdigit:]]{8})$`)
 var nativeContextPattern = regexp.MustCompile(`\bContext ([0-9]+)% used\b`)
@@ -61,7 +76,10 @@ var codexSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 const (
 	usageCacheTTL   = 30 * time.Second
 	usageRetryDelay = 10 * time.Second
-	usageLockMaxAge = 8 * time.Second
+	// agent-deck bounds its own Codex app-server read at 5s; killing it sooner
+	// discards the refresh it was about to cache.
+	usageFetchTimeout = 8 * time.Second
+	usageLockMaxAge   = 12 * time.Second
 )
 
 func SystemStats() Stats {
@@ -717,82 +735,50 @@ func writeUsageCache(path string, cache usageCache) error {
 }
 
 func fetchUsage() (Usage, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), usageFetchTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "codex", "app-server", "--stdio")
-	stdin, err := cmd.StdinPipe()
+	out, err := exec.CommandContext(ctx, "agent-deck", "usage", "--json").Output()
 	if err != nil {
 		return Usage{}, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Usage{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		return Usage{}, err
-	}
-	encoder := json.NewEncoder(stdin)
-	requests := []any{
-		map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"clientInfo": map[string]string{"name": "codex-statusline", "version": "0.2.0"}, "capabilities": map[string]any{}}},
-		map[string]any{"method": "initialized", "params": map[string]any{}},
-		map[string]any{"id": 2, "method": "account/rateLimits/read", "params": map[string]any{}},
-	}
-	for _, request := range requests {
-		if err := encoder.Encode(request); err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return Usage{}, err
-		}
-	}
-
-	type response struct {
-		ID     int `json:"id"`
-		Result struct {
-			RateLimits rateLimitSnapshot `json:"rateLimits"`
-		} `json:"result"`
-		Error json.RawMessage `json:"error"`
-	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		var message response
-		if json.Unmarshal(scanner.Bytes(), &message) != nil || message.ID != 2 {
-			continue
-		}
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		if len(message.Error) > 0 && string(message.Error) != "null" {
-			return Usage{}, fmt.Errorf("rate limit request failed")
-		}
-		return classifyUsage(message.Result.RateLimits), nil
-	}
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
-	if err := scanner.Err(); err != nil {
-		return Usage{}, err
-	}
-	return Usage{}, fmt.Errorf("rate limit response missing")
+	return parseAgentDeckUsage(out)
 }
 
-func classifyUsage(snapshot rateLimitSnapshot) Usage {
-	var usage Usage
-	for _, window := range []*rateLimitWindow{snapshot.Primary, snapshot.Secondary} {
-		if window == nil || window.WindowDurationMins == nil {
+// parseAgentDeckUsage maps agent-deck's Codex snapshot onto the weekly gauge.
+// A snapshot carrying an error or marked stale still holds agent-deck's
+// last-known numbers, so those render; only a report with no Codex numbers at
+// all is a failure, which keeps this renderer's own last-known value in place.
+func parseAgentDeckUsage(data []byte) (Usage, error) {
+	var report agentDeckUsageReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return Usage{}, err
+	}
+	for _, snapshot := range report.Providers {
+		if snapshot.ID != agentDeckCodexProvider {
 			continue
 		}
-		value := window.UsedPercent
-		if *window.WindowDurationMins == 10080 {
+		if snapshot.Error != "" && len(snapshot.Windows) == 0 {
+			return Usage{}, fmt.Errorf("agent-deck codex usage: %s", snapshot.Error)
+		}
+		var usage Usage
+		for _, window := range snapshot.Windows {
+			if window.Kind != agentDeckSevenDayKind {
+				continue
+			}
 			resetsAt := int64(0)
 			if window.ResetsAt != nil {
 				resetsAt = *window.ResetsAt
 			}
 			usage.SevenDay = &UsageWindow{
-				UsedPercent:        value,
-				WindowDurationMins: *window.WindowDurationMins,
+				UsedPercent:        int(math.Round(window.UsedPercentage)),
+				WindowDurationMins: sevenDayWindowMins,
 				ResetsAt:           resetsAt,
 			}
+			break
 		}
+		return usage, nil
 	}
-	return usage
+	return Usage{}, fmt.Errorf("agent-deck reports no codex provider")
 }
 
 func darwinStats() Stats {

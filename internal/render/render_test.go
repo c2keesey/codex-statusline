@@ -258,14 +258,117 @@ func TestScanContextPercentRejectsMissingWindow(t *testing.T) {
 	}
 }
 
-func TestClassifyUsageByWindowDuration(t *testing.T) {
-	five, seven, reset := int64(300), int64(10080), int64(2_000_000)
-	got := classifyUsage(rateLimitSnapshot{
-		Primary:   &rateLimitWindow{UsedPercent: 12, WindowDurationMins: &five},
-		Secondary: &rateLimitWindow{UsedPercent: 34, WindowDurationMins: &seven, ResetsAt: &reset},
-	})
-	if got.SevenDay == nil || got.SevenDay.UsedPercent != 34 || got.SevenDay.ResetsAt != reset {
-		t.Fatalf("unexpected seven-day usage: %#v", got.SevenDay)
+func TestParseAgentDeckUsageMapsSevenDayWindow(t *testing.T) {
+	got, err := parseAgentDeckUsage([]byte(`{"providers":[
+		{"id":"claude","label":"Claude","windows":[{"kind":"seven_day","label":"7d","used_percentage":74,"resets_at":1790672400}],"updated_at":1790652860,"stale":false},
+		{"id":"codex","label":"Codex","plan":"pro","windows":[
+			{"kind":"five_hour","label":"5h","used_percentage":12.0,"resets_at":1790000000},
+			{"kind":"seven_day","label":"7d","used_percentage":40.0,"resets_at":1790500000}
+		],"updated_at":1790000000,"stale":false}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := UsageWindow{UsedPercent: 40, WindowDurationMins: 10080, ResetsAt: 1790500000}
+	if got.SevenDay == nil || *got.SevenDay != want {
+		t.Fatalf("seven-day = %#v, want %#v", got.SevenDay, want)
+	}
+}
+
+func TestParseAgentDeckUsageRoundsFractionalPercent(t *testing.T) {
+	got, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"codex","windows":[{"kind":"seven_day","used_percentage":39.6}]}]}`))
+	if err != nil || got.SevenDay == nil || got.SevenDay.UsedPercent != 40 {
+		t.Fatalf("usage = %#v, err = %v", got.SevenDay, err)
+	}
+}
+
+func TestParseAgentDeckUsageMissingResetHasNoPace(t *testing.T) {
+	got, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"codex","windows":[{"kind":"seven_day","label":"7d","used_percentage":40}]}]}`))
+	if err != nil || got.SevenDay == nil {
+		t.Fatalf("usage = %#v, err = %v", got.SevenDay, err)
+	}
+	if got.SevenDay.ResetsAt != 0 {
+		t.Fatalf("resets_at = %d, want 0", got.SevenDay.ResetsAt)
+	}
+	if line := weeklyUsage(got.SevenDay, time.Now()); line != "7d ▰▰▱▱ 40%" {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+func TestParseAgentDeckUsageKeepsLastKnownNumbersWithError(t *testing.T) {
+	got, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"codex","windows":[{"kind":"seven_day","used_percentage":55,"resets_at":1790500000}],"error":"codex: app-server timed out","stale":false}]}`))
+	if err != nil || got.SevenDay == nil || got.SevenDay.UsedPercent != 55 {
+		t.Fatalf("usage = %#v, err = %v", got.SevenDay, err)
+	}
+}
+
+func TestParseAgentDeckUsageErrorWithoutNumbersFails(t *testing.T) {
+	if _, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"codex","windows":[],"error":"codex: not signed in"}]}`)); err == nil {
+		t.Fatal("expected an error so the renderer keeps its last-known value")
+	}
+}
+
+func TestParseAgentDeckUsageRendersStaleSnapshot(t *testing.T) {
+	got, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"codex","windows":[{"kind":"seven_day","used_percentage":61,"resets_at":1790500000}],"stale":true}]}`))
+	if err != nil || got.SevenDay == nil || got.SevenDay.UsedPercent != 61 {
+		t.Fatalf("usage = %#v, err = %v", got.SevenDay, err)
+	}
+}
+
+func TestParseAgentDeckUsageWithoutSevenDayWindowHidesGauge(t *testing.T) {
+	got, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"codex","windows":[{"kind":"five_hour","used_percentage":12},{"kind":"other","label":"30d","used_percentage":5}]}]}`))
+	if err != nil || got.SevenDay != nil {
+		t.Fatalf("usage = %#v, err = %v", got.SevenDay, err)
+	}
+}
+
+func TestParseAgentDeckUsageRejectsMissingProvider(t *testing.T) {
+	if _, err := parseAgentDeckUsage([]byte(`{"providers":[{"id":"claude","windows":[{"kind":"seven_day","used_percentage":74}]}]}`)); err == nil {
+		t.Fatal("expected an error when agent-deck has no codex provider")
+	}
+}
+
+func TestParseAgentDeckUsageRejectsMalformedJSON(t *testing.T) {
+	for _, input := range []string{``, `not json`, `{"providers":[`, `{"providers":{"id":"codex"}}`} {
+		if _, err := parseAgentDeckUsage([]byte(input)); err == nil {
+			t.Fatalf("expected an error for %q", input)
+		}
+	}
+}
+
+// fakeAgentDeck puts an agent-deck stub first on PATH (or no agent-deck at all
+// when output is empty) and points the usage cache at a fresh temp dir.
+func fakeAgentDeck(t *testing.T, output string) {
+	t.Helper()
+	bin := t.TempDir()
+	if output != "" {
+		script := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\n"
+		if err := os.WriteFile(filepath.Join(bin, "agent-deck"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("TMPDIR", t.TempDir())
+}
+
+func TestUsageRatesReadsAgentDeck(t *testing.T) {
+	fakeAgentDeck(t, `{"providers":[{"id":"codex","windows":[{"kind":"seven_day","used_percentage":40,"resets_at":1790500000}],"updated_at":1790000000,"stale":false}]}`)
+	got := UsageRates()
+	if got.SevenDay == nil || got.SevenDay.UsedPercent != 40 || got.SevenDay.ResetsAt != 1790500000 {
+		t.Fatalf("usage = %#v", got.SevenDay)
+	}
+}
+
+func TestUsageRatesHidesGaugeWithoutAgentDeck(t *testing.T) {
+	fakeAgentDeck(t, "")
+	if line := weeklyUsage(UsageRates().SevenDay, time.Now()); line != "7d ▱▱▱▱ —" {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+func TestUsageRatesHidesGaugeWhenAgentDeckLacksCodex(t *testing.T) {
+	fakeAgentDeck(t, `{"providers":[{"id":"claude","windows":[{"kind":"seven_day","used_percentage":74}],"stale":false}]}`)
+	if line := weeklyUsage(UsageRates().SevenDay, time.Now()); line != "7d ▱▱▱▱ —" {
+		t.Fatalf("line = %q", line)
 	}
 }
 
