@@ -120,6 +120,21 @@ printf '%s\n' 'AGENTDECK_INSTANCE_ID=instance-1' 'CLAUDE_SESSION_ID=claude-456'
 	}
 }
 
+func TestClaudeLineANSIRendersContextAboveOneHundred(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	stateJSON := `{"fetched_at":2000000000,"context_percent":116,"seven_day":{"used_percent":53,"window_duration_mins":10080,"resets_at":2000604800}}`
+	if err := os.WriteFile(claudeStatePath("claude-789"), []byte(stateJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plain := ansiPattern.ReplaceAllString(LineForClaudeANSI("claude-789", "agentdeck_test_abcdef12"), "")
+	for _, want := range []string{"116%", "7d", "53%"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("line %q does not contain %q", plain, want)
+		}
+	}
+}
+
 func TestClaudeLineANSIRendersSharedFooterContent(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	stateJSON := `{"fetched_at":2000000000,"context_percent":36,"seven_day":{"used_percent":42,"window_duration_mins":10080,"resets_at":2000604800}}`
