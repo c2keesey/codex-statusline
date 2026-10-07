@@ -17,8 +17,11 @@ import (
 	"time"
 )
 
+// Stats are percentages of the whole host. CPU is everything outside the
+// self-hosted CI containers and CI is their share; Mem includes CI.
 type Stats struct {
 	CPU int
+	CI  int
 	Mem int
 }
 
@@ -101,8 +104,7 @@ func LineWithSession(cwd, session string) string {
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsage(usage.SevenDay, time.Now()))
-	machine := []string{fmt.Sprintf("↯%d", stats.CPU), fmt.Sprintf("⛁%d", stats.Mem)}
-	groups = append(groups, strings.Join(machine, " "))
+	groups = append(groups, machineLabel(stats, "", ""))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, label)
 	}
@@ -132,8 +134,7 @@ func LineWithSessionTMUX(cwd, session string) string {
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
-	machine := fmt.Sprintf("%s↯%d ⛁%d", tmuxDimGreen, stats.CPU, stats.Mem)
-	groups = append(groups, machine+tmuxReset)
+	groups = append(groups, tmuxDimGreen+machineLabel(stats, tmuxPercentColor(100), tmuxDimGreen)+tmuxReset)
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, tmuxSummaryColor+label+tmuxReset)
 	}
@@ -161,7 +162,7 @@ func LineForClaudeANSI(claudeSessionID, session string) string {
 	groups := make([]string, 0, 4)
 	groups = append(groups, ansiPercentColor(state.ContextPercent)+fmt.Sprintf("%d%%", state.ContextPercent)+ansiReset)
 	groups = append(groups, weeklyUsageANSI(state.SevenDay, time.Now()))
-	groups = append(groups, fmt.Sprintf("%s↯%d ⛁%d%s", ansiDimGreen, stats.CPU, stats.Mem, ansiReset))
+	groups = append(groups, ansiDimGreen+machineLabel(stats, ansiPercentColor(100), ansiDimGreen)+ansiReset)
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, ansiSummaryColor+label+ansiReset)
 	}
@@ -786,7 +787,15 @@ func darwinStats() Stats {
 	if cores < 1 {
 		cores = 1
 	}
-	load := commandFloatField("sysctl", []string{"-n", "vm.loadavg"}, 1)
+	// Summed per-process %CPU over all cores; the load average counted
+	// runnable tasks and read past 100.
+	load := 0.0
+	if out, err := exec.Command("ps", "-A", "-o", "%cpu=").Output(); err == nil {
+		for _, field := range strings.Fields(string(out)) {
+			value, _ := strconv.ParseFloat(field, 64)
+			load += value
+		}
+	}
 	total := commandInt64("sysctl", "-n", "hw.memsize")
 	pageSize := commandInt64("pagesize")
 	active, wired := int64(0), int64(0)
@@ -805,13 +814,11 @@ func darwinStats() Stats {
 		}
 	}
 	mem := percent((active+wired)*pageSize, total)
-	return Stats{CPU: int(load * 100 / float64(cores)), Mem: mem}
+	return Stats{CPU: min(int(load/float64(cores)+0.5), 100), Mem: mem}
 }
 
 func linuxStats() Stats {
-	cores := runtime.NumCPU()
-	loadData, _ := os.ReadFile("/proc/loadavg")
-	load, _ := strconv.ParseFloat(strings.Fields(string(loadData))[0], 64)
+	owner, ci := linuxCPU()
 	total, available := int64(0), int64(0)
 	file, err := os.Open("/proc/meminfo")
 	if err == nil {
@@ -831,7 +838,7 @@ func linuxStats() Stats {
 			}
 		}
 	}
-	return Stats{CPU: int(load * 100 / float64(cores)), Mem: percent(total-available, total)}
+	return Stats{CPU: owner, CI: ci, Mem: percent(total-available, total)}
 }
 
 func commandInt(name string, args ...string) int {
