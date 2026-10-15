@@ -659,29 +659,45 @@ func UsageRates() Usage {
 	cachePath := filepath.Join(os.TempDir(), "codex-statusline-usage.json")
 	cached, cacheOK := readUsageCache(cachePath)
 	now := time.Now()
-	if cacheOK && cached.FetchedAt > 0 && now.Sub(time.Unix(cached.FetchedAt, 0)) < usageCacheTTL {
-		return cached.Usage
+	expired := cached.Usage.expired(now)
+	fallback := cached.Usage.current(now)
+	if cacheOK && !expired && cached.FetchedAt > 0 && now.Sub(time.Unix(cached.FetchedAt, 0)) < usageCacheTTL {
+		return fallback
 	}
 	if cacheOK && cached.LastAttempt > 0 && now.Sub(time.Unix(cached.LastAttempt, 0)) < usageRetryDelay {
-		return cached.Usage
+		return fallback
 	}
 
 	lockPath := cachePath + ".lock"
 	lock, ok := acquireUsageLock(lockPath, now)
 	if !ok {
-		return cached.Usage
+		return fallback
 	}
 	lock.Close()
 	defer os.Remove(lockPath)
 	cached.LastAttempt = now.Unix()
 	_ = writeUsageCache(cachePath, cached)
 
-	usage, err := fetchUsage()
+	usage, err := fetchUsage(expired)
+	if err == nil && !expired && usage.expired(time.Now()) {
+		usage, err = fetchUsage(true)
+	}
 	if err != nil {
-		return cached.Usage
+		return fallback
 	}
 	updated := usageCache{FetchedAt: time.Now().Unix(), LastAttempt: now.Unix(), Usage: usage}
 	_ = writeUsageCache(cachePath, updated)
+	return usage.current(time.Now())
+}
+
+func (usage Usage) expired(now time.Time) bool {
+	return usage.SevenDay != nil && usage.SevenDay.ResetsAt > 0 && now.Unix() >= usage.SevenDay.ResetsAt
+}
+
+func (usage Usage) current(now time.Time) Usage {
+	if usage.expired(now) {
+		usage.SevenDay = nil
+	}
 	return usage
 }
 
@@ -735,10 +751,14 @@ func writeUsageCache(path string, cache usageCache) error {
 	return os.Rename(tmpName, path)
 }
 
-func fetchUsage() (Usage, error) {
+func fetchUsage(refresh bool) (Usage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), usageFetchTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "agent-deck", "usage", "--json").Output()
+	args := []string{"usage", "--json"}
+	if refresh {
+		args = append(args, "--refresh")
+	}
+	out, err := exec.CommandContext(ctx, "agent-deck", args...).Output()
 	if err != nil {
 		return Usage{}, err
 	}

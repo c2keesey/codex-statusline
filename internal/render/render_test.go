@@ -366,9 +366,9 @@ func fakeAgentDeck(t *testing.T, output string) {
 }
 
 func TestUsageRatesReadsAgentDeck(t *testing.T) {
-	fakeAgentDeck(t, `{"providers":[{"id":"codex","windows":[{"kind":"seven_day","used_percentage":40,"resets_at":1790500000}],"updated_at":1790000000,"stale":false}]}`)
+	fakeAgentDeck(t, `{"providers":[{"id":"codex","windows":[{"kind":"seven_day","used_percentage":40,"resets_at":4102444800}],"updated_at":1790000000,"stale":false}]}`)
 	got := UsageRates()
-	if got.SevenDay == nil || got.SevenDay.UsedPercent != 40 || got.SevenDay.ResetsAt != 1790500000 {
+	if got.SevenDay == nil || got.SevenDay.UsedPercent != 40 || got.SevenDay.ResetsAt != 4102444800 {
 		t.Fatalf("usage = %#v", got.SevenDay)
 	}
 }
