@@ -307,3 +307,20 @@ func machineLabel(stats Stats, color func(int) string, normal string) string {
 	}
 	return strings.Join(append(parts, mem), " ")
 }
+
+// The machine group's alert colors are plain weight; the usage gauges keep
+// their bold.
+func machineColour(severity int) int {
+	if severity >= severityHigh {
+		return 9
+	}
+	return 136
+}
+
+func ansiMachineColor(severity int) string {
+	return fmt.Sprintf("\x1b[38;5;%dm", machineColour(severity))
+}
+
+func tmuxMachineColor(severity int) string {
+	return fmt.Sprintf("#[fg=colour%d]", machineColour(severity))
+}
