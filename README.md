@@ -78,6 +78,20 @@ calendar day on which they begin. Codex also reads Claude's shared
 `~/.claude/statusline-schedule` file for weekday and dated overrides. Set
 `CODEX_STATUSLINE_SCHEDULE` to use a different file just for Codex.
 
+On a Linux host shared with Incus containers, the machine group reads as the
+owner sees it, `↯16t ◷6% ⛁87G`:
+
+- `↯16t` — threads the owner could take now: idle ones plus what containers
+  would hand back under contention, by `cpu.weight` (an idle-class container
+  yields everything, an equal-weight one half).
+- `◷6%` — share of the last 10 seconds the owner's runnable tasks waited for a
+  CPU (PSI on `user-<uid>.slice`). Gold from 5%, red from 20%, where it also
+  names the container holding the most CPU (`◷24% la-casa`).
+- `⌂22%` — the same wait for la-casa, shown only from 15%.
+- `⛁87G` — memory still available. Gold under 40G, red under 20G.
+
+macOS keeps `↯` busy percent and `⛁` used percent.
+
 Both installers are idempotent. Before the first edit they preserve a sibling
 `*.codex-statusline.bak` copy of the existing config.
 

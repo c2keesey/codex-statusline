@@ -17,12 +17,12 @@ import (
 	"time"
 )
 
-// Stats are percentages of the whole host. CPU is everything outside the
-// self-hosted CI containers and CI is their share; Mem includes CI.
+// Stats on macOS are percentages of the whole machine. On Linux, Host
+// replaces them with what the owner can still get from a shared host.
 type Stats struct {
-	CPU int
-	CI  int
-	Mem int
+	CPU  int
+	Mem  int
+	Host *HostLoad
 }
 
 type Usage struct {
@@ -104,7 +104,7 @@ func LineWithSession(cwd, session string) string {
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsage(usage.SevenDay, time.Now()))
-	groups = append(groups, machineLabel(stats, "", ""))
+	groups = append(groups, machineLabel(stats, nil, ""))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, label)
 	}
@@ -134,7 +134,7 @@ func LineWithSessionTMUX(cwd, session string) string {
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
-	groups = append(groups, tmuxDimGreen+machineLabel(stats, tmuxPercentColor(100), tmuxDimGreen)+tmuxReset)
+	groups = append(groups, tmuxDimGreen+machineLabel(stats, tmuxPercentColor, tmuxDimGreen)+tmuxReset)
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, tmuxSummaryColor+label+tmuxReset)
 	}
@@ -162,7 +162,7 @@ func LineForClaudeANSI(claudeSessionID, session string) string {
 	groups := make([]string, 0, 4)
 	groups = append(groups, ansiPercentColor(state.ContextPercent)+fmt.Sprintf("%d%%", state.ContextPercent)+ansiReset)
 	groups = append(groups, weeklyUsageANSI(state.SevenDay, time.Now()))
-	groups = append(groups, ansiDimGreen+machineLabel(stats, ansiPercentColor(100), ansiDimGreen)+ansiReset)
+	groups = append(groups, ansiDimGreen+machineLabel(stats, ansiPercentColor, ansiDimGreen)+ansiReset)
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, ansiSummaryColor+label+ansiReset)
 	}
@@ -835,30 +835,6 @@ func darwinStats() Stats {
 	}
 	mem := percent((active+wired)*pageSize, total)
 	return Stats{CPU: min(int(load/float64(cores)+0.5), 100), Mem: mem}
-}
-
-func linuxStats() Stats {
-	owner, ci := linuxCPU()
-	total, available := int64(0), int64(0)
-	file, err := os.Open("/proc/meminfo")
-	if err == nil {
-		defer file.Close()
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			if len(fields) < 2 {
-				continue
-			}
-			value, _ := strconv.ParseInt(fields[1], 10, 64)
-			switch strings.TrimSuffix(fields[0], ":") {
-			case "MemTotal":
-				total = value
-			case "MemAvailable":
-				available = value
-			}
-		}
-	}
-	return Stats{CPU: owner, CI: ci, Mem: percent(total-available, total)}
 }
 
 func commandInt(name string, args ...string) int {
