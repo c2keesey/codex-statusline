@@ -319,13 +319,16 @@ func machineLabel(stats Stats, base string, color func(int) string, reset string
 	return strings.Join(parts, " ")
 }
 
-// The machine group's alert colors are plain weight; the usage gauges keep
-// their bold.
+// The machine group's alert colors are plain weight and 256-colour entries
+// (Claude Code downsamples RGB to these anyway), each clearing 4:1 contrast on
+// the light (#E9F2EF) and 3.5:1 on the dark (#011116) terminal background.
+// Ghostty's minimum-contrast = 3 repaints anything under 3:1 black or white,
+// as it did gold 136 (2.9:1 on light).
 func machineColour(severity int) int {
 	if severity >= severityHigh {
-		return 9
+		return 160 // #d70000
 	}
-	return 136
+	return 130 // #af5f00
 }
 
 func ansiMachineColor(severity int) string {
