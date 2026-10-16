@@ -104,7 +104,7 @@ func LineWithSession(cwd, session string) string {
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsage(usage.SevenDay, time.Now()))
-	groups = append(groups, machineLabel(stats, nil, ""))
+	groups = append(groups, machineLabel(stats, "", nil, ""))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, label)
 	}
@@ -134,7 +134,7 @@ func LineWithSessionTMUX(cwd, session string) string {
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
-	groups = append(groups, tmuxDimGreen+machineLabel(stats, tmuxMachineColor, tmuxDimGreen)+tmuxReset)
+	groups = append(groups, machineLabel(stats, tmuxDimGreen, tmuxMachineColor, tmuxReset))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, tmuxSummaryColor+label+tmuxReset)
 	}
@@ -162,7 +162,7 @@ func LineForClaudeANSI(claudeSessionID, session string) string {
 	groups := make([]string, 0, 4)
 	groups = append(groups, ansiPercentColor(state.ContextPercent)+fmt.Sprintf("%d%%", state.ContextPercent)+ansiReset)
 	groups = append(groups, weeklyUsageANSI(state.SevenDay, time.Now()))
-	groups = append(groups, ansiDimGreen+machineLabel(stats, ansiMachineColor, ansiDimGreen)+ansiReset)
+	groups = append(groups, machineLabel(stats, ansiDimGreen, ansiMachineColor, ansiReset))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, ansiSummaryColor+label+ansiReset)
 	}

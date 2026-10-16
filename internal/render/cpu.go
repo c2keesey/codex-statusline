@@ -263,49 +263,60 @@ func linuxStats() Stats {
 	return Stats{Host: &load}
 }
 
-// machineLabel renders the machine group. color maps a 0-100 severity to an
-// escape and normal restores the group's own color; a nil color renders
-// plain text.
+// machineLabel renders the machine group. Each item is wrapped on its own,
+// base+item+reset or color(severity)+item+reset, because Claude Code's
+// renderer drops a color switch nested inside an open one. Empty base and
+// reset with a nil color render plain text.
 //
 // Linux: "↯16t ◷6% ⛁98G", plus the culprit after a high wait ("◷24% la-casa")
 // and "⌂22%" while Poquito's own wait is high. macOS: "↯12 ⛁45".
-func machineLabel(stats Stats, color func(int) string, normal string) string {
-	paint := func(severity int, text string) string {
-		if color == nil || severity < severityWarn {
-			return text
+func machineLabel(stats Stats, base string, color func(int) string, reset string) string {
+	var parts []string
+	add := func(severity int, text string) {
+		switch {
+		case color != nil && severity >= severityWarn:
+			text = color(severity) + text + reset
+		case base != "":
+			text = base + text + reset
 		}
-		return color(severity) + text + normal
+		parts = append(parts, text)
 	}
 	load := stats.Host
 	if load == nil {
-		mem := fmt.Sprintf("⛁%d", stats.Mem)
+		add(0, fmt.Sprintf("↯%d", stats.CPU))
+		memSeverity := 0
 		if stats.Mem >= 85 {
-			mem = paint(severityHigh, mem)
+			memSeverity = severityHigh
 		}
-		return fmt.Sprintf("↯%d %s", stats.CPU, mem)
+		add(memSeverity, fmt.Sprintf("⛁%d", stats.Mem))
+		return strings.Join(parts, " ")
 	}
+	add(0, fmt.Sprintf("↯%dt", load.FreeThreads))
 	wait := fmt.Sprintf("◷%d%%", load.Wait)
 	if load.Culprit != "" {
 		wait += " " + load.Culprit
 	}
 	switch {
 	case load.Wait >= waitAlert:
-		wait = paint(severityHigh, wait)
+		add(severityHigh, wait)
 	case load.Wait >= waitWarn:
-		wait = paint(severityWarn, wait)
+		add(severityWarn, wait)
+	default:
+		add(0, wait)
+	}
+	if load.PoquitoWait >= poquitoShow {
+		add(severityWarn, fmt.Sprintf("⌂%d%%", load.PoquitoWait))
 	}
 	mem := fmt.Sprintf("⛁%dG", load.MemFreeGiB)
 	switch {
 	case load.MemFreeGiB < memAlertGiB:
-		mem = paint(severityHigh, mem)
+		add(severityHigh, mem)
 	case load.MemFreeGiB < memWarnGiB:
-		mem = paint(severityWarn, mem)
+		add(severityWarn, mem)
+	default:
+		add(0, mem)
 	}
-	parts := []string{fmt.Sprintf("↯%dt", load.FreeThreads), wait}
-	if load.PoquitoWait >= poquitoShow {
-		parts = append(parts, paint(severityWarn, fmt.Sprintf("⌂%d%%", load.PoquitoWait)))
-	}
-	return strings.Join(append(parts, mem), " ")
+	return strings.Join(parts, " ")
 }
 
 // The machine group's alert colors are plain weight; the usage gauges keep

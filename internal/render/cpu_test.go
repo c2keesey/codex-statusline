@@ -81,20 +81,20 @@ func TestMachineLabel(t *testing.T) {
 		stats Stats
 		want  string
 	}{
-		{Stats{CPU: 12, Mem: 45}, "↯12 ⛁45"},
-		{Stats{CPU: 3, Mem: 90}, "↯3 <⛁90>"},
-		{host(HostLoad{FreeThreads: 16, Wait: 2, MemFreeGiB: 98, PoquitoWait: -1}), "↯16t ◷2% ⛁98G"},
-		{host(HostLoad{FreeThreads: 16, Wait: 6, MemFreeGiB: 98, PoquitoWait: 3}), "↯16t {◷6%> ⛁98G"},
+		{Stats{CPU: 12, Mem: 45}, "[↯12> [⛁45>"},
+		{Stats{CPU: 3, Mem: 90}, "[↯3> <⛁90>"},
+		{host(HostLoad{FreeThreads: 16, Wait: 2, MemFreeGiB: 98, PoquitoWait: -1}), "[↯16t> [◷2%> [⛁98G>"},
+		{host(HostLoad{FreeThreads: 16, Wait: 6, MemFreeGiB: 98, PoquitoWait: 3}), "[↯16t> {◷6%> [⛁98G>"},
 		{host(HostLoad{FreeThreads: 2, Wait: 24, Culprit: "la-casa", MemFreeGiB: 30, PoquitoWait: 22}),
-			"↯2t <◷24% la-casa> {⌂22%> {⛁30G>"},
-		{host(HostLoad{FreeThreads: 9, MemFreeGiB: 12, PoquitoWait: 15}), "↯9t ◷0% {⌂15%> <⛁12G>"},
+			"[↯2t> <◷24% la-casa> {⌂22%> {⛁30G>"},
+		{host(HostLoad{FreeThreads: 9, MemFreeGiB: 12, PoquitoWait: 15}), "[↯9t> [◷0%> {⌂15%> <⛁12G>"},
 	}
 	for _, c := range cases {
-		if got := machineLabel(c.stats, color, ">"); got != c.want {
+		if got := machineLabel(c.stats, "[", color, ">"); got != c.want {
 			t.Errorf("machineLabel(%+v) = %q; want %q", c.stats.Host, got, c.want)
 		}
 	}
-	if got := machineLabel(cases[4].stats, nil, ""); got != "↯2t ◷24% la-casa ⌂22% ⛁30G" {
+	if got := machineLabel(cases[4].stats, "", nil, ""); got != "↯2t ◷24% la-casa ⌂22% ⛁30G" {
 		t.Errorf("plain machineLabel = %q", got)
 	}
 }
