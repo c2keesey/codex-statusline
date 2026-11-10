@@ -6,13 +6,69 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
+)
+
+// Stats on macOS are percentages of the whole machine. On Linux, Host
+// replaces them with what the owner can still get from a shared host.
+type Stats struct {
+	CPU  int
+	Mem  int
+	Host *HostLoad
+}
+
+type Usage struct {
+	SevenDay *UsageWindow `json:"seven_day,omitempty"`
+}
+
+type UsageWindow struct {
+	UsedPercent        int   `json:"used_percent"`
+	WindowDurationMins int64 `json:"window_duration_mins"`
+	ResetsAt           int64 `json:"resets_at"`
+}
+
+type usageCache struct {
+	FetchedAt   int64 `json:"fetched_at"`
+	LastAttempt int64 `json:"last_attempt,omitempty"`
+	Usage
+}
+
+type paceSchedule struct {
+	weekdays map[string]float64
+	dates    map[string]float64
+}
+
+// agentDeckUsageReport is the subset of `agent-deck usage --json` this renderer
+// reads. agent-deck owns acquisition of subscription quota for every provider;
+// this line never talks to the Codex app-server itself.
+type agentDeckUsageReport struct {
+	Providers []agentDeckQuotaSnapshot `json:"providers"`
+}
+
+type agentDeckQuotaSnapshot struct {
+	ID      string                 `json:"id"`
+	Windows []agentDeckQuotaWindow `json:"windows"`
+	Error   string                 `json:"error"`
+}
+
+type agentDeckQuotaWindow struct {
+	Kind           string  `json:"kind"`
+	UsedPercentage float64 `json:"used_percentage"`
+	ResetsAt       *int64  `json:"resets_at"`
+}
+
+const (
+	agentDeckCodexProvider = "codex"
+	agentDeckSevenDayKind  = "seven_day"
+	sevenDayWindowMins     = 10080
 )
 
 var agentDeckSessionPattern = regexp.MustCompile(`^agentdeck_(.+)_([[:xdigit:]]{8})$`)
@@ -20,15 +76,35 @@ var nativeContextPattern = regexp.MustCompile(`\bContext ([0-9]+)% used\b`)
 var claudeSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 var codexSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+const (
+	usageCacheTTL   = 30 * time.Second
+	usageRetryDelay = 10 * time.Second
+	// agent-deck bounds its own Codex app-server read at 5s; killing it sooner
+	// discards the refresh it was about to cache.
+	usageFetchTimeout = 8 * time.Second
+	usageLockMaxAge   = 12 * time.Second
+)
+
+func SystemStats() Stats {
+	if runtime.GOOS == "darwin" {
+		return darwinStats()
+	}
+	return linuxStats()
+}
+
 func Line(cwd string) string {
 	return LineWithSession(cwd, "")
 }
 
 func LineWithSession(cwd, session string) string {
+	stats := SystemStats()
 	groups := make([]string, 0, 4)
 	if value, ok := ContextPercent(session); ok {
 		groups = append(groups, fmt.Sprintf("%d%%", value))
 	}
+	usage := UsageRates()
+	groups = append(groups, weeklyUsage(usage.SevenDay, time.Now()))
+	groups = append(groups, machineLabel(stats, "", nil, ""))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, label)
 	}
@@ -38,6 +114,8 @@ func LineWithSession(cwd, session string) string {
 const (
 	tmuxReset        = "#[default]"
 	tmuxGray         = "#[fg=default,dim]"
+	tmuxDimGreen     = "#[fg=colour2]"
+	tmuxBarEmpty     = "#[fg=default,dim]"
 	tmuxSummaryColor = "#[fg=colour12]"
 )
 
@@ -49,10 +127,14 @@ func LineWithSessionTMUX(cwd, session string) string {
 	if !ok || !metadata.codex {
 		return ""
 	}
+	stats := SystemStats()
 	groups := make([]string, 0, 4)
 	if value, ok := contextPercentForSession(session, metadata.instanceID, metadata.codexSessionID); ok {
 		groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
 	}
+	usage := UsageRates()
+	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
+	groups = append(groups, machineLabel(stats, tmuxDimGreen, tmuxMachineColor, tmuxReset))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, tmuxSummaryColor+label+tmuxReset)
 	}
@@ -62,6 +144,8 @@ func LineWithSessionTMUX(cwd, session string) string {
 const (
 	ansiReset        = "\x1b[0m"
 	ansiGray         = "\x1b[90m"
+	ansiDimGreen     = "\x1b[32m"
+	ansiBarEmpty     = "\x1b[90m"
 	ansiSummaryColor = "\x1b[94m"
 )
 
@@ -74,12 +158,39 @@ func LineForClaudeANSI(claudeSessionID, session string) string {
 	if !ok {
 		return ""
 	}
+	stats := SystemStats()
 	groups := make([]string, 0, 4)
 	groups = append(groups, ansiPercentColor(state.ContextPercent)+fmt.Sprintf("%d%%", state.ContextPercent)+ansiReset)
+	groups = append(groups, weeklyUsageANSI(state.SevenDay, time.Now()))
+	groups = append(groups, machineLabel(stats, ansiDimGreen, ansiMachineColor, ansiReset))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, ansiSummaryColor+label+ansiReset)
 	}
 	return strings.Join(groups, " "+ansiGray+"│"+ansiReset+" ")
+}
+
+func weeklyUsageANSI(window *UsageWindow, now time.Time) string {
+	if window == nil {
+		return ansiGray + "7d " + ansiBarEmpty + "▱▱▱▱ —" + ansiReset
+	}
+	percentColor := ansiPercentColor(window.UsedPercent)
+	filled := int(float64(window.UsedPercent)/25 + 0.5)
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > 4 {
+		filled = 4
+	}
+	bar := percentColor + strings.Repeat("▰", filled)
+	if filled < 4 {
+		bar += ansiBarEmpty + strings.Repeat("▱", 4-filled)
+	}
+	label := ansiGray + "7d " + bar + " " + percentColor + fmt.Sprintf("%d%%", window.UsedPercent) + ansiReset
+	if ratio, ok := burnRatio(window, now); ok {
+		severity := int(ratio / 1.5 * 100)
+		label += " " + ansiPercentColor(severity) + "⇡" + formatRatio(ratio) + "×" + ansiReset
+	}
+	return label
 }
 
 func ansiPercentColor(percent int) string {
@@ -93,6 +204,30 @@ func ansiPercentColor(percent int) string {
 		colour = 136
 	}
 	return fmt.Sprintf("\x1b[1;38;5;%dm", colour)
+}
+
+func weeklyUsageTMUX(window *UsageWindow, now time.Time) string {
+	if window == nil {
+		return tmuxGray + "7d " + tmuxBarEmpty + "▱▱▱▱" + tmuxGray + " —" + tmuxReset
+	}
+	percentColor := tmuxPercentColor(window.UsedPercent)
+	filled := int(float64(window.UsedPercent)/25 + 0.5)
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > 4 {
+		filled = 4
+	}
+	bar := percentColor + strings.Repeat("▰", filled)
+	if filled < 4 {
+		bar += tmuxBarEmpty + strings.Repeat("▱", 4-filled)
+	}
+	label := tmuxGray + "7d " + bar + " " + percentColor + fmt.Sprintf("%d%%", window.UsedPercent) + tmuxReset
+	if ratio, ok := burnRatio(window, now); ok {
+		severity := int(ratio / 1.5 * 100)
+		label += " " + tmuxPercentColor(severity) + "⇡" + formatRatio(ratio) + "×" + tmuxReset
+	}
+	return label
 }
 
 func tmuxPercentColor(percent int) string {
@@ -150,8 +285,9 @@ type agentDeckMetadata struct {
 }
 
 type claudeState struct {
-	FetchedAt      int64 `json:"fetched_at"`
-	ContextPercent int   `json:"context_percent"`
+	FetchedAt      int64        `json:"fetched_at"`
+	ContextPercent int          `json:"context_percent"`
+	SevenDay       *UsageWindow `json:"seven_day,omitempty"`
 }
 
 func agentDeckSessionMetadata(session string) (agentDeckMetadata, bool) {
@@ -354,6 +490,371 @@ func CompactSession(session string) string {
 		return strings.TrimPrefix(session, "agentdeck_")
 	}
 	return match[1] + "_" + match[2][:3]
+}
+
+func weeklyUsage(window *UsageWindow, now time.Time) string {
+	if window == nil {
+		return "7d ▱▱▱▱ —"
+	}
+	label := fmt.Sprintf("7d %s %d%%", usageGauge(window.UsedPercent), window.UsedPercent)
+	if ratio, ok := burnRatio(window, now); ok {
+		label += " ⇡" + formatRatio(ratio) + "×"
+	}
+	return label
+}
+
+// usageGauge mirrors the four-cell gauge in the Claude Code status line.
+func usageGauge(percent int) string {
+	filled := int(float64(percent)/25 + 0.5)
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > 4 {
+		filled = 4
+	}
+	return strings.Repeat("▰", filled) + strings.Repeat("▱", 4-filled)
+}
+
+// burnRatio is actual spend divided by expected spend at this point in the
+// rolling window. A value of 1.0 is exactly on pace; 1.4 is burning 40% hot.
+func burnRatio(window *UsageWindow, now time.Time) (float64, bool) {
+	return burnRatioWithSchedule(window, now, loadPaceSchedule())
+}
+
+func burnRatioWithSchedule(window *UsageWindow, now time.Time, schedule paceSchedule) (float64, bool) {
+	if window == nil || window.WindowDurationMins <= 0 || window.ResetsAt <= 0 {
+		return 0, false
+	}
+	end := time.Unix(window.ResetsAt, 0).In(now.Location())
+	start := end.Add(-time.Duration(window.WindowDurationMins) * time.Minute)
+	if !now.After(start) {
+		return 0, false
+	}
+	if now.After(end) {
+		now = end
+	}
+	expectedFraction, ok := workweekExpected(start, end, now, schedule)
+	if !ok {
+		return 0, false
+	}
+	expectedPercent := expectedFraction * 100
+	if expectedPercent < 2 {
+		return 0, false
+	}
+	return float64(window.UsedPercent) / expectedPercent, true
+}
+
+func workweekExpected(start, end, now time.Time, schedule paceSchedule) (float64, bool) {
+	if !end.After(start) {
+		return 0, false
+	}
+	if now.Before(start) {
+		now = start
+	}
+	if now.After(end) {
+		now = end
+	}
+
+	var total, elapsed float64
+	for dayStart := start; dayStart.Before(end); dayStart = dayStart.Add(24 * time.Hour) {
+		dayEnd := dayStart.Add(24 * time.Hour)
+		if dayEnd.After(end) {
+			dayEnd = end
+		}
+		weight := schedule.weight(dayStart)
+		total += weight * dayEnd.Sub(dayStart).Hours() / 24
+		if now.After(dayStart) {
+			elapsedEnd := now
+			if elapsedEnd.After(dayEnd) {
+				elapsedEnd = dayEnd
+			}
+			elapsed += weight * elapsedEnd.Sub(dayStart).Hours() / 24
+		}
+	}
+	if total <= 0 {
+		return 0, false
+	}
+	return elapsed / total, true
+}
+
+func (schedule paceSchedule) weight(day time.Time) float64 {
+	weight := 1.0
+	if day.Weekday() == time.Saturday || day.Weekday() == time.Sunday {
+		weight = 0.5
+	}
+	weekday := strings.ToLower(day.Weekday().String()[:3])
+	if override, ok := schedule.weekdays[weekday]; ok {
+		weight = override
+	}
+	if override, ok := schedule.dates[day.Format("2006-01-02")]; ok {
+		weight = override
+	}
+	return weight
+}
+
+func loadPaceSchedule() paceSchedule {
+	path := os.Getenv("CODEX_STATUSLINE_SCHEDULE")
+	if path == "" {
+		path = os.Getenv("CLAUDE_STATUSLINE_SCHEDULE")
+	}
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return paceSchedule{}
+		}
+		path = filepath.Join(home, ".claude", "statusline-schedule")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return paceSchedule{}
+	}
+	defer file.Close()
+	return parsePaceSchedule(file)
+}
+
+func parsePaceSchedule(reader io.Reader) paceSchedule {
+	schedule := paceSchedule{
+		weekdays: make(map[string]float64),
+		dates:    make(map[string]float64),
+	}
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := strings.SplitN(scanner.Text(), "#", 2)[0]
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		key := strings.ToLower(fields[0])
+		weight := 0.0
+		if len(fields) >= 2 {
+			weight, _ = strconv.ParseFloat(fields[1], 64)
+		}
+		if len(key) == 3 && strings.Contains(" mon tue wed thu fri sat sun ", " "+key+" ") {
+			if _, exists := schedule.weekdays[key]; !exists {
+				schedule.weekdays[key] = weight
+			}
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", key); err == nil {
+			if _, exists := schedule.dates[key]; !exists {
+				schedule.dates[key] = weight
+			}
+		}
+	}
+	return schedule
+}
+
+func formatRatio(ratio float64) string {
+	switch {
+	case ratio >= 10:
+		return fmt.Sprintf("%.0f", ratio)
+	case ratio >= 0.1:
+		return fmt.Sprintf("%.1f", ratio)
+	default:
+		return fmt.Sprintf("%.2f", ratio)
+	}
+}
+
+func UsageRates() Usage {
+	cachePath := filepath.Join(os.TempDir(), "codex-statusline-usage.json")
+	cached, cacheOK := readUsageCache(cachePath)
+	now := time.Now()
+	expired := cached.Usage.expired(now)
+	fallback := cached.Usage.current(now)
+	if cacheOK && !expired && cached.FetchedAt > 0 && now.Sub(time.Unix(cached.FetchedAt, 0)) < usageCacheTTL {
+		return fallback
+	}
+	if cacheOK && cached.LastAttempt > 0 && now.Sub(time.Unix(cached.LastAttempt, 0)) < usageRetryDelay {
+		return fallback
+	}
+
+	lockPath := cachePath + ".lock"
+	lock, ok := acquireUsageLock(lockPath, now)
+	if !ok {
+		return fallback
+	}
+	lock.Close()
+	defer os.Remove(lockPath)
+	cached.LastAttempt = now.Unix()
+	_ = writeUsageCache(cachePath, cached)
+
+	usage, err := fetchUsage(expired)
+	if err == nil && !expired && usage.expired(time.Now()) {
+		usage, err = fetchUsage(true)
+	}
+	if err != nil {
+		return fallback
+	}
+	updated := usageCache{FetchedAt: time.Now().Unix(), LastAttempt: now.Unix(), Usage: usage}
+	_ = writeUsageCache(cachePath, updated)
+	return usage.current(time.Now())
+}
+
+func (usage Usage) expired(now time.Time) bool {
+	return usage.SevenDay != nil && usage.SevenDay.ResetsAt > 0 && now.Unix() >= usage.SevenDay.ResetsAt
+}
+
+func (usage Usage) current(now time.Time) Usage {
+	if usage.expired(now) {
+		usage.SevenDay = nil
+	}
+	return usage
+}
+
+func acquireUsageLock(path string, now time.Time) (*os.File, bool) {
+	lock, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		return lock, true
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil || now.Sub(info.ModTime()) <= usageLockMaxAge {
+		return nil, false
+	}
+	if os.Remove(path) != nil {
+		return nil, false
+	}
+	lock, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	return lock, err == nil
+}
+
+func readUsageCache(path string) (usageCache, bool) {
+	var cache usageCache
+	data, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(data, &cache) != nil {
+		return cache, false
+	}
+	return cache, true
+}
+
+func writeUsageCache(path string, cache usageCache) error {
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".codex-statusline-usage-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+func fetchUsage(refresh bool) (Usage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), usageFetchTimeout)
+	defer cancel()
+	args := []string{"usage", "--json"}
+	if refresh {
+		args = append(args, "--refresh")
+	}
+	out, err := exec.CommandContext(ctx, "agent-deck", args...).Output()
+	if err != nil {
+		return Usage{}, err
+	}
+	return parseAgentDeckUsage(out)
+}
+
+// parseAgentDeckUsage maps agent-deck's Codex snapshot onto the weekly gauge.
+// A snapshot carrying an error or marked stale still holds agent-deck's
+// last-known numbers, so those render; only a report with no Codex numbers at
+// all is a failure, which keeps this renderer's own last-known value in place.
+func parseAgentDeckUsage(data []byte) (Usage, error) {
+	var report agentDeckUsageReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return Usage{}, err
+	}
+	for _, snapshot := range report.Providers {
+		if snapshot.ID != agentDeckCodexProvider {
+			continue
+		}
+		if snapshot.Error != "" && len(snapshot.Windows) == 0 {
+			return Usage{}, fmt.Errorf("agent-deck codex usage: %s", snapshot.Error)
+		}
+		var usage Usage
+		for _, window := range snapshot.Windows {
+			if window.Kind != agentDeckSevenDayKind {
+				continue
+			}
+			resetsAt := int64(0)
+			if window.ResetsAt != nil {
+				resetsAt = *window.ResetsAt
+			}
+			usage.SevenDay = &UsageWindow{
+				UsedPercent:        int(math.Round(window.UsedPercentage)),
+				WindowDurationMins: sevenDayWindowMins,
+				ResetsAt:           resetsAt,
+			}
+			break
+		}
+		return usage, nil
+	}
+	return Usage{}, fmt.Errorf("agent-deck reports no codex provider")
+}
+
+func darwinStats() Stats {
+	cores := commandInt("sysctl", "-n", "hw.ncpu")
+	if cores < 1 {
+		cores = 1
+	}
+	// Summed per-process %CPU over all cores; the load average counted
+	// runnable tasks and read past 100.
+	load := 0.0
+	if out, err := exec.Command("ps", "-A", "-o", "%cpu=").Output(); err == nil {
+		for _, field := range strings.Fields(string(out)) {
+			value, _ := strconv.ParseFloat(field, 64)
+			load += value
+		}
+	}
+	total := commandInt64("sysctl", "-n", "hw.memsize")
+	pageSize := commandInt64("pagesize")
+	active, wired := int64(0), int64(0)
+	out, _ := exec.Command("vm_stat").Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.ReplaceAll(line, ".", ""))
+		if len(fields) < 3 {
+			continue
+		}
+		value, _ := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+		if strings.HasPrefix(line, "Pages active") {
+			active = value
+		}
+		if strings.HasPrefix(line, "Pages wired") {
+			wired = value
+		}
+	}
+	mem := percent((active+wired)*pageSize, total)
+	return Stats{CPU: min(int(load/float64(cores)+0.5), 100), Mem: mem}
+}
+
+func commandInt(name string, args ...string) int {
+	return int(commandInt64(name, args...))
+}
+
+func commandInt64(name string, args ...string) int64 {
+	out, _ := exec.Command(name, args...).Output()
+	value, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	return value
+}
+
+func commandFloatField(name string, args []string, index int) float64 {
+	out, _ := exec.Command(name, args...).Output()
+	fields := strings.Fields(string(out))
+	if index >= len(fields) {
+		return 0
+	}
+	value, _ := strconv.ParseFloat(fields[index], 64)
+	return value
 }
 
 func percent(part, total int64) int {
