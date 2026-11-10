@@ -1,8 +1,9 @@
 # codex-statusline
 
 A Claude Code-style status line for Codex, using Codex's native TUI footer for
-live agent data and an optional tmux companion for the machine signals Codex
-doesn't expose.
+live agent data and an optional tmux companion for the signals Codex doesn't
+expose. Machine load lives in MAIA Deck's header (its `machines` field), not
+here.
 
 The result follows the same information architecture as the original two-line
 Claude status line:
@@ -16,7 +17,6 @@ Claude status line:
 | weekly usage | `weekly-limit` |
 | model + effort glyph | `model-with-reasoning` |
 | weekly usage + burn pace | Codex snapshot from `agent-deck usage --json`, cached for 30 seconds |
-| CPU + memory | optional tmux companion (`↯` + `⛁`) |
 
 The native pieces update inside the Codex pane and survive tmux, Agent Deck,
 SSH, and terminal resizes. Codex does not currently accept an arbitrary command
@@ -48,7 +48,7 @@ This replaces Agent Deck's redundant tmux session/window text and key hints with
 a compact shared row:
 
 ```text
-  61% │ 7d ▰▱▱▱ 30% ⇡0.8× │ ↯42 ⛁32 │ feature-work_5a5
+  61% │ 7d ▰▱▱▱ 30% ⇡0.8× │ feature-work_5a5
 ```
 
 Codex renders the row in tmux. Claude Code renders the same content as the
@@ -78,27 +78,13 @@ calendar day on which they begin. Codex also reads Claude's shared
 `~/.claude/statusline-schedule` file for weekday and dated overrides. Set
 `CODEX_STATUSLINE_SCHEDULE` to use a different file just for Codex.
 
-On a Linux host shared with Incus containers, the machine group reads as the
-owner sees it, `↯16t ◷6% ⛁87G`:
-
-- `↯16t` — threads the owner could take now: idle ones plus what containers
-  would hand back under contention, by `cpu.weight` (an idle-class container
-  yields everything, an equal-weight one half).
-- `◷6%` — share of the last 10 seconds the owner's runnable tasks waited for a
-  CPU (PSI on `user-<uid>.slice`). Gold from 5%, red from 20%, where it also
-  names the container holding the most CPU (`◷24% la-casa`).
-- `⌂22%` — the same wait for la-casa, shown only from 15%.
-- `⛁87G` — memory still available. Gold under 40G, red under 20G.
-
-macOS keeps `↯` busy percent and `⛁` used percent.
-
 Both installers are idempotent. Before the first edit they preserve a sibling
 `*.codex-statusline.bak` copy of the existing config.
 
 ## Privacy
 
 The status line has no telemetry and makes no network requests of its own. It
-reads local tmux state, machine load, and the Codex quota snapshot printed by
+reads local tmux state and the Codex quota snapshot printed by
 the local `agent-deck usage --json`.
 The cache contains only rate-limit percentages and reset timestamps, is stored
 in the system temp directory with user-only permissions, and expires after 30

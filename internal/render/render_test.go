@@ -144,7 +144,7 @@ func TestClaudeLineANSIRendersSharedFooterContent(t *testing.T) {
 
 	got := LineForClaudeANSI("claude-456", "agentdeck_test_abcdef12")
 	plain := ansiPattern.ReplaceAllString(got, "")
-	for _, want := range []string{"36%", "7d", "42%", "↯", "⛁", "test_abc"} {
+	for _, want := range []string{"36%", "7d", "42%", "test_abc"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("line %q does not contain %q", plain, want)
 		}

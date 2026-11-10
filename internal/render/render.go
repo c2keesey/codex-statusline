@@ -11,19 +11,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
-
-// Stats on macOS are percentages of the whole machine. On Linux, Host
-// replaces them with what the owner can still get from a shared host.
-type Stats struct {
-	CPU  int
-	Mem  int
-	Host *HostLoad
-}
 
 type Usage struct {
 	SevenDay *UsageWindow `json:"seven_day,omitempty"`
@@ -85,26 +76,17 @@ const (
 	usageLockMaxAge   = 12 * time.Second
 )
 
-func SystemStats() Stats {
-	if runtime.GOOS == "darwin" {
-		return darwinStats()
-	}
-	return linuxStats()
-}
-
 func Line(cwd string) string {
 	return LineWithSession(cwd, "")
 }
 
 func LineWithSession(cwd, session string) string {
-	stats := SystemStats()
 	groups := make([]string, 0, 4)
 	if value, ok := ContextPercent(session); ok {
 		groups = append(groups, fmt.Sprintf("%d%%", value))
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsage(usage.SevenDay, time.Now()))
-	groups = append(groups, machineLabel(stats, "", nil, ""))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, label)
 	}
@@ -127,14 +109,12 @@ func LineWithSessionTMUX(cwd, session string) string {
 	if !ok || !metadata.codex {
 		return ""
 	}
-	stats := SystemStats()
 	groups := make([]string, 0, 4)
 	if value, ok := contextPercentForSession(session, metadata.instanceID, metadata.codexSessionID); ok {
 		groups = append(groups, tmuxPercentColor(value)+fmt.Sprintf("%d%%", value)+tmuxReset)
 	}
 	usage := UsageRates()
 	groups = append(groups, weeklyUsageTMUX(usage.SevenDay, time.Now()))
-	groups = append(groups, machineLabel(stats, tmuxDimGreen, tmuxMachineColor, tmuxReset))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, tmuxSummaryColor+label+tmuxReset)
 	}
@@ -158,11 +138,9 @@ func LineForClaudeANSI(claudeSessionID, session string) string {
 	if !ok {
 		return ""
 	}
-	stats := SystemStats()
 	groups := make([]string, 0, 4)
 	groups = append(groups, ansiPercentColor(state.ContextPercent)+fmt.Sprintf("%d%%", state.ContextPercent)+ansiReset)
 	groups = append(groups, weeklyUsageANSI(state.SevenDay, time.Now()))
-	groups = append(groups, machineLabel(stats, ansiDimGreen, ansiMachineColor, ansiReset))
 	if label := CompactSession(session); label != "" {
 		groups = append(groups, ansiSummaryColor+label+ansiReset)
 	}
@@ -800,61 +778,6 @@ func parseAgentDeckUsage(data []byte) (Usage, error) {
 		return usage, nil
 	}
 	return Usage{}, fmt.Errorf("agent-deck reports no codex provider")
-}
-
-func darwinStats() Stats {
-	cores := commandInt("sysctl", "-n", "hw.ncpu")
-	if cores < 1 {
-		cores = 1
-	}
-	// Summed per-process %CPU over all cores; the load average counted
-	// runnable tasks and read past 100.
-	load := 0.0
-	if out, err := exec.Command("ps", "-A", "-o", "%cpu=").Output(); err == nil {
-		for _, field := range strings.Fields(string(out)) {
-			value, _ := strconv.ParseFloat(field, 64)
-			load += value
-		}
-	}
-	total := commandInt64("sysctl", "-n", "hw.memsize")
-	pageSize := commandInt64("pagesize")
-	active, wired := int64(0), int64(0)
-	out, _ := exec.Command("vm_stat").Output()
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(strings.ReplaceAll(line, ".", ""))
-		if len(fields) < 3 {
-			continue
-		}
-		value, _ := strconv.ParseInt(fields[len(fields)-1], 10, 64)
-		if strings.HasPrefix(line, "Pages active") {
-			active = value
-		}
-		if strings.HasPrefix(line, "Pages wired") {
-			wired = value
-		}
-	}
-	mem := percent((active+wired)*pageSize, total)
-	return Stats{CPU: min(int(load/float64(cores)+0.5), 100), Mem: mem}
-}
-
-func commandInt(name string, args ...string) int {
-	return int(commandInt64(name, args...))
-}
-
-func commandInt64(name string, args ...string) int64 {
-	out, _ := exec.Command(name, args...).Output()
-	value, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-	return value
-}
-
-func commandFloatField(name string, args []string, index int) float64 {
-	out, _ := exec.Command(name, args...).Output()
-	fields := strings.Fields(string(out))
-	if index >= len(fields) {
-		return 0
-	}
-	value, _ := strconv.ParseFloat(fields[index], 64)
-	return value
 }
 
 func percent(part, total int64) int {
